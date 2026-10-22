@@ -3,3 +3,5 @@
 node_modules/
 plugin/runtime.json
 plugin/local.json
+plugin/notifications.json
+plugin/*.tmp
