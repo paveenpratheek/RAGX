@@ -63,7 +63,8 @@ function report(r) {
   else if (r.status === 'exists') console.log(`= ${name}: already indexed (id ${r.doc.id})`);
   else {
     const pages = r.doc.pages ? `, ${r.doc.pages} pages` : '';
-    console.log(`✓ ${name}: ${r.status}, ${r.doc.chunks} chunks${pages} (id ${r.doc.id})`);
+    const again = r.rechunked ? ` - chunked again at ${r.target} characters, too dense for the model` : '';
+    console.log(`✓ ${name}: ${r.status}, ${r.doc.chunks} chunks${pages} (id ${r.doc.id})${again}`);
   }
 }
 

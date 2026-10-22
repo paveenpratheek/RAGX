@@ -1,20 +1,36 @@
-/* Blocks in, chunks out: pieces of about 1800 characters that follow the
- * document's own structure.
+/* Blocks in, chunks out: pieces that follow the document's own structure,
+ * sized to what the embedding model can take in one go.
  *
- * 1800 characters is about 386 tokens, inside the 512-token window of the
- * embedding model (t-833b7833e5). A chunk never crosses a heading, so the
- * heading path it carries is true of all of it. Inside a section, prose is
- * packed by sentence; code by line and tables by row, so neither is ever cut
- * mid-line, and a table carried on into the next chunk repeats its header.
+ * A chunk never crosses a heading, so the heading path it carries is true of
+ * all of it. Inside a section, prose is packed by sentence; code by line and
+ * tables by row, so neither is ever cut mid-line, and a table carried on into
+ * the next chunk repeats its header.
  *
- * Consecutive prose chunks overlap by up to 250 characters of whole sentences,
+ * Consecutive prose chunks overlap by whole sentences, up to 250 characters,
  * so a fact that sits on a boundary is whole in at least one of them. Each
  * chunk records the length of that repeat as `lead`, which is what lets search
  * join two neighbours back together without reading it twice (t-1177c55292).
  */
 
+/* Never more than this, whatever the model's window: past it a chunk holds
+ * several topics and its one vector describes none of them well. */
 export const TARGET = 1800;
 export const OVERLAP = 250;
+
+/* Characters per token to size chunks by. Real chunks, embedded with their
+ * "document > heading" line, ran 3.64 characters a token at the median but
+ * 2.23 at the worst; a chunk sized by the median would be refused, so this
+ * sits near the dense end. Going tighter still (2.25) added chunks and left
+ * the one densest chunk refused anyway (t-854cd59c18). */
+export const CHARS_PER_TOKEN = 2.5;
+
+/* The first target for a model with this many tokens of context: as much of
+ * the window as dense text can safely fill (t-74879afa78), never more than
+ * TARGET (t-27f743aa8e). */
+export function targetFor(windowTokens) {
+  if (!windowTokens) return TARGET;
+  return Math.min(TARGET, Math.floor(windowTokens * CHARS_PER_TOKEN));
+}
 
 const sentenceSplitter = new Intl.Segmenter('en', { granularity: 'sentence' });
 
@@ -81,10 +97,15 @@ function atomsOf(block, prevBlock, target) {
   return atoms;
 }
 
-export function chunk(blocks, { target = TARGET, overlap = OVERLAP } = {}) {
+/* reserve(headingPath): characters the embedded input spends before the text
+ * - the "document > heading" line - so text and line together fit the target.
+ * Overlap shrinks with the space left, to at most a seventh of it
+ * (t-4cc42f1a3a). */
+export function chunk(blocks, { target = TARGET, overlap = OVERLAP, reserve = () => 0 } = {}) {
   const chunks = [];
   const stack = []; // open headings, outermost first
-  let cur = null;   // { atoms, len, heading }
+  let cur = null;   // { atoms, len, heading, limit }
+  const limitOf = (heading) => Math.max(200, target - reserve(heading));
 
   const emit = () => {
     if (!cur || !cur.atoms.length) { cur = null; return; }
@@ -101,25 +122,27 @@ export function chunk(blocks, { target = TARGET, overlap = OVERLAP } = {}) {
   };
 
   const start = (heading, prev, next) => {
-    cur = { atoms: [], len: 0, heading, lead: 0 };
+    const limit = limitOf(heading);
+    cur = { atoms: [], len: 0, heading, lead: 0, limit };
     if (!prev) return;
     // Overlap: whole prose sentences from the end of the previous chunk.
+    const most = Math.min(overlap, Math.round(limit / 7));
     const tail = [];
     let len = 0;
     for (let i = prev.atoms.length - 1; i >= 0; i--) {
       const a = prev.atoms[i];
       if (!a.prose) break;
       const add = a.text.length + (tail.length ? tail[0].joiner.length : 0);
-      if (len + add > overlap) break;
+      if (len + add > most) break;
       tail.unshift(a);
       len += add;
     }
     const tailLen = tail.reduce((s, a, i) => s + a.text.length + (i ? a.joiner.length : 0), 0);
-    if (tail.length && tailLen + next.joiner.length + next.text.length <= target) {
+    if (tail.length && tailLen + next.joiner.length + next.text.length <= limit) {
       cur.atoms.push(...tail);
       cur.len = tailLen;
       cur.lead = tailLen;
-    } else if (next.header && next.header.length + 1 + next.text.length <= target) {
+    } else if (next.header && next.header.length + 1 + next.text.length <= limit) {
       // A table carried on: its header row opens the new chunk.
       cur.atoms.push({ text: next.header, joiner: '\n\n', page: next.page, prose: false });
       cur.len = next.header.length;
@@ -138,10 +161,10 @@ export function chunk(blocks, { target = TARGET, overlap = OVERLAP } = {}) {
       prevBlock = block;
       continue;
     }
-    for (const atom of atomsOf(block, prevBlock, target)) {
+    for (const atom of atomsOf(block, prevBlock, limitOf(path()))) {
       if (!cur) start(path(), null, atom);
       const add = (cur.atoms.length ? atom.joiner.length : 0) + atom.text.length;
-      if (cur.atoms.length && cur.len + add > target) {
+      if (cur.atoms.length && cur.len + add > cur.limit) {
         const prev = cur;
         emit();
         start(prev.heading, prev, atom);

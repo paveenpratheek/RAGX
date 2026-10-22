@@ -17,7 +17,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { Store, STATUS } from './store.js';
 import { extract, ExtractError, SUPPORTED } from './extract/index.js';
-import { chunk, TARGET } from './chunk.js';
+import { chunk, targetFor } from './chunk.js';
 import { Embedder, EmbedError, readSettings, writeSettings, signature, chunkInput } from './embed.js';
 import { VectorIndex } from './vectors.js';
 import { hybridSearch } from './search.js';
@@ -30,10 +30,11 @@ export class EngineError extends Error {
   }
 }
 
-/* When a chunk is too long for the model - dense tables and numbers cost
- * more tokens per character than prose - the whole document is chunked
- * again, smaller, rather than one chunk being cut (t-364fe5c674). */
-const CHUNK_TARGETS = [TARGET, Math.round(TARGET * 0.7), Math.round(TARGET * 0.5)];
+/* Chunks start at the size the model's window holds for dense text. When
+ * one is still refused as too long, the whole document is chunked again,
+ * smaller, rather than one chunk being cut (t-364fe5c674) - a safety net, no
+ * longer the usual path (t-f224d18ac0). */
+const FALLBACK = [1, 0.7, 0.5];
 
 /* How many chunks are embedded and written per step: the most a Ctrl+C can
  * cost, and how often progress is reported. */
@@ -103,13 +104,14 @@ export class Engine {
        * the first chunk without a vector. Anything else starts over
        * (t-b1b91e9fd2). */
       const canResume = doc.status === STATUS.embedding && doc.embedded_with === sig && this.store.docChunkIds(id).length > 0;
+      let built = { target: null, rechunked: 0 };
       if (canResume) await this.embedMissing(doc, say);
-      else await this.build(doc, say);
+      else built = await this.build(doc, say);
       this.store.setReady(id, sig);
       doc = this.store.doc(id);
       this.indexAdd(id);
       say('ready', doc.chunks, doc.chunks);
-      return { status: label, doc };
+      return { status: label, doc, ...built };
     } catch (e) {
       /* A document that cannot be read is in error for good. Ollama stopped,
        * or the model not pulled, leaves the status as it was, so the next
@@ -123,21 +125,32 @@ export class Engine {
     }
   }
 
+  /* The model's context length, asked of Ollama once per model. */
+  async windowTokens() {
+    if (this.embedder.ctx === undefined) await this.embedder.describe();
+    return this.embedder.ctx;
+  }
+
   async build(doc, say) {
     this.store.setStatus(doc.id, STATUS.extracting);
     say('extracting');
     const { blocks, pages } = await extract(fs.readFileSync(this.fileOf(doc)), doc.ext);
     this.store.setPages(doc.id, pages);
+    const first = targetFor(await this.windowTokens());
+    // The "document > heading" line is embedded with every chunk, so it
+    // comes out of the same budget.
+    const reserve = (heading) => chunkInput(doc.name, heading, '').length;
     let lastError;
-    for (const target of CHUNK_TARGETS) {
-      const chunks = chunk(blocks, { target });
+    for (const [tries, scale] of FALLBACK.entries()) {
+      const target = Math.round(first * scale);
+      const chunks = chunk(blocks, { target, reserve });
       if (!chunks.length) throw new ExtractError('empty', 'The document has no text outside its headings.');
       if (this.index) this.index.remove(this.store.docChunkIds(doc.id));
       this.store.replaceChunks(doc.id, chunks);
       this.store.setEmbedding(doc.id, this.embedder.signature);
       try {
         await this.embedMissing(doc, say);
-        return;
+        return { target, rechunked: tries };
       } catch (e) {
         if (!(e instanceof EmbedError && e.code === 'too-long')) throw e;
         lastError = e;

@@ -10,8 +10,8 @@ import { makeDocx, makePdf, w } from './fixtures.js';
 
 /* A stand-in Ollama. Vectors are words hashed into buckets, so texts that
  * share words are close - enough to test the pipeline, not meaning. */
-function fakeOllama({ models = { [DEFAULT_MODEL]: 64, other: 32 }, maxChars = Infinity, failAfter = Infinity } = {}) {
-  const state = { embedCalls: 0, inputs: [] };
+function fakeOllama({ models = { [DEFAULT_MODEL]: 64, other: 32 }, ctx = 512, maxChars = Infinity, failAfter = Infinity } = {}) {
+  const state = { embedCalls: 0, inputs: [], refusals: 0 };
   const hash = (s) => { let h = 2166136261; for (const c of s) h = Math.imul(h ^ c.codePointAt(0), 16777619); return h >>> 0; };
   const vec = (text, dim) => {
     const v = new Array(dim).fill(0);
@@ -25,11 +25,14 @@ function fakeOllama({ models = { [DEFAULT_MODEL]: 64, other: 32 }, maxChars = In
     const p = new URL(url).pathname;
     if (!dim) return reply(404, { error: `model "${body.model}" not found, try pulling it first` });
     if (p === '/api/show') {
-      return reply(200, { capabilities: ['embedding'], model_info: { 'general.architecture': 'fake', 'fake.embedding_length': dim, 'fake.context_length': 512 } });
+      return reply(200, { capabilities: ['embedding'], model_info: { 'general.architecture': 'fake', 'fake.embedding_length': dim, 'fake.context_length': ctx } });
     }
     if (state.embedCalls >= failAfter) throw new TypeError('fetch failed');
     state.embedCalls++;
-    if (body.input.some((t) => t.length > maxChars)) return reply(400, { error: 'the input length exceeds the context length' });
+    if (body.input.some((t) => t.length > maxChars)) {
+      state.refusals++;
+      return reply(400, { error: 'the input length exceeds the context length' });
+    }
     state.inputs.push(...body.input);
     return reply(200, { embeddings: body.input.map((t) => vec(t, dim)) });
   };
@@ -126,14 +129,32 @@ test('an ingest cut short while embedding resumes at the first chunk without a v
   assert.equal(e.stats().vectors, total);
 });
 
-test('a document too dense for the model is chunked again, smaller', async (t) => {
-  const ollama = fakeOllama({ maxChars: 1500 });
+const ledger = Array.from({ length: 200 }, (_, i) => `Row ${i} holds value ${i * 37} for account ${1000 + i}.`).join(' ');
+
+test('the first chunk size comes from the model window, so a dense document is embedded once', async (t) => {
+  // 256 tokens of window: inputs up to 640 characters, and the stand-in
+  // refuses anything longer - as nomic would refuse a chunk sized for prose.
+  const ollama = fakeOllama({ ctx: 256, maxChars: 640 });
   const { engine, write } = setup(t, ollama);
-  const e = engine();
-  const text = Array.from({ length: 200 }, (_, i) => `Row ${i} holds value ${i * 37} for account ${1000 + i}.`).join(' ');
-  const r = await e.ingest(write('ledger.txt', text));
+  const r = await engine().ingest(write('ledger.txt', ledger));
   assert.equal(r.status, 'added');
-  assert.ok(ollama.inputs.every((s) => s.length <= 1500));
+  assert.deepEqual([r.target, r.rechunked, ollama.refusals], [640, 0, 0]);
+  assert.ok(ollama.inputs.every((s) => s.length <= 640), 'the document > heading line counts against the size');
+});
+
+test('a document denser than the window allows is still chunked again, smaller', async (t) => {
+  const ollama = fakeOllama({ ctx: 512, maxChars: 1000 });
+  const { engine, write } = setup(t, ollama);
+  const r = await engine().ingest(write('ledger.txt', ledger));
+  assert.equal(r.status, 'added');
+  assert.ok(r.rechunked >= 1 && r.target < 1280);
+  assert.ok(ollama.inputs.every((s) => s.length <= 1000));
+});
+
+test('a model with a large window keeps chunks at the 1800-character ceiling', async (t) => {
+  const { engine, write } = setup(t, fakeOllama({ ctx: 8192 }));
+  const r = await engine().ingest(write('ledger.txt', ledger));
+  assert.equal(r.target, 1800);
 });
 
 test('changing the model blocks search until every document is re-embedded', async (t) => {

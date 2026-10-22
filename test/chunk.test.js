@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chunk, TARGET } from '../engine/lib/chunk.js';
+import { chunk, TARGET, targetFor } from '../engine/lib/chunk.js';
 
 const para = (text, page) => ({ kind: 'para', text, page });
 const sentence = (i) => `Sentence number ${i} talks about the quarterly figures for region ${i % 7}.`;
@@ -90,6 +90,21 @@ test('a sentence longer than the target is cut at whitespace, and a word with no
   assert.ok(out.every((c) => c.text.length <= TARGET));
   assert.equal(out.map((c) => c.text).join(' ').replace(/\s+/g, ' ').replace(/\s?x+/g, '').trim(), long);
   assert.equal(out.filter((c) => /^x+$/.test(c.text)).reduce((s, c) => s + c.text.length, 0), 4000);
+});
+
+test('targetFor sizes chunks to the window, under a ceiling', () => {
+  assert.equal(targetFor(512), 1280);
+  assert.equal(targetFor(8192), TARGET);
+  assert.equal(targetFor(null), TARGET);
+});
+
+test('the reserved heading line comes out of each section\'s size, and overlap shrinks with it', () => {
+  const text = Array.from({ length: 120 }, (_, i) => sentence(i)).join(' ');
+  const reserve = (heading) => ('report.pdf > ' + heading + '\n\n').length;
+  const out = chunk([{ kind: 'heading', level: 1, text: 'A long section heading that takes room' }, para(text)], { target: 600, reserve });
+  for (const c of out) assert.ok(reserve(c.heading) + c.text.length <= 600, `${reserve(c.heading) + c.text.length}`);
+  assert.ok(out.slice(1).every((c) => c.lead <= Math.round((600 - reserve(out[0].heading)) / 7)));
+  assert.equal(rejoin(out), text);
 });
 
 test('headings alone produce no chunks', () => {

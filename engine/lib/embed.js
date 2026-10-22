@@ -110,7 +110,8 @@ export class Embedder {
       return k ? Number(info[k]) : null;
     };
     this.dim = pick('embedding_length');
-    return { model: this.model, dim: this.dim, ctx: pick('context_length') };
+    this.ctx = pick('context_length');
+    return { model: this.model, dim: this.dim, ctx: this.ctx };
   }
 
   async embed(inputs) {
