@@ -124,7 +124,7 @@ function showOllama(o) {
   box.hidden = false;
   $('ollama-start').hidden = o.state !== 'down';
   $('ollama-pull').hidden = o.state !== 'model-missing';
-  $('ollama-msg').textContent = o.state === 'down' ? 'Ollama is not running - documents cannot be read and questions are searched by keyword only.'
+  $('ollama-msg').textContent = o.state === 'down' ? (o.startError ? `The engine could not start Ollama: ${o.startError}` : 'Ollama is not running - documents cannot be read and questions are searched by keyword only.')
     : o.state === 'model-missing' ? `The embedding model ${o.model} is not downloaded.` : `Ollama: ${o.error || o.state}`;
 }
 
@@ -187,6 +187,9 @@ function onEvent(e) {
       break;
     case 'pool':
       renderPool(e.pool);
+      break;
+    case 'ollama': // the engine finished starting (or finding) Ollama
+      refresh();
       break;
     default:
       break;
@@ -485,7 +488,8 @@ function renderSettings() {
   facts.replaceChildren(
     ...row('Engine', `${engine.url} · version ${st.version} · pid ${st.pid}`),
     ...row('Data', st.dataDir),
-    ...row('Ollama', st.ollama.state === 'up' ? `${st.ollama.model} · ${st.ollama.dim} dimensions · ${st.ollama.window}-token window` : st.ollama.error || st.ollama.state),
+    ...row('Ollama', (st.ollama.state === 'up' ? `${st.ollama.model} · ${st.ollama.dim} dimensions · ${st.ollama.window}-token window` : st.ollama.error || st.ollama.state)
+      + (st.ollama.owned ? ' · started by the engine, stops with it' : st.ollama.managed && st.ollama.state === 'up' ? ' · was already running; left running when the engine stops, its model unloaded' : '')),
     ...row('Claude', agent('claude')),
     ...row('Antigravity', agent('agy')),
     ...row('Index', `${st.totals.docs} documents · ${st.totals.chunks} passages · ${st.conversations} conversations`),
@@ -548,7 +552,8 @@ function wire() {
   $('stop-btn').addEventListener('click', async () => {
     $('menu').hidden = true;
     if (!S.up) { toast('The engine is not running.'); return; }
-    if (!confirm('Stop the engine? Answers in progress are ended; documents being read resume on the next start.')) return;
+    const own = S.state && S.state.ollama && S.state.ollama.owned;
+    if (!confirm(`Stop the engine? Answers in progress are ended; documents being read resume on the next start. ${own ? 'Ollama, which the engine started, stops too.' : 'The embedding model is unloaded from Ollama.'}`)) return;
     try { await engine.json('POST', '/api/shutdown'); toast('The engine is stopping.'); } catch (e) { toast(e.message, true); }
     S.startedAt = 0;
     setTimeout(() => refresh().then(schedule), 1500);

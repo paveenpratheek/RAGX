@@ -25,7 +25,7 @@ async function serve(t, { claude = 'answer', agy = 'echo', dir = null, poolOptio
       claude: { executable: process.execPath, prefixArgs: [FAKE, 'claude', claude], timeoutMs: 10_000 },
       agy: { executable: process.execPath, prefixArgs: [FAKE, 'agy', agy], timeoutMs: 10_000 },
     },
-    poolOptions, signals: false, log: () => {},
+    poolOptions, signals: false, log: () => {}, manageOllama: false,
   });
   if (!dir) t.after(async () => { await s.stop(); fs.rmSync(root, { recursive: true, force: true }); });
   const call = (p, { method = 'GET', body, headers = {}, token = s.token, raw = false, signal } = {}) => fetch(s.url + p, {
@@ -83,7 +83,7 @@ test('serving writes runtime.json with the url and token, and one data folder ta
   const { s, root } = await serve(t);
   const rt = JSON.parse(fs.readFileSync(path.join(root, 'plugin', 'runtime.json'), 'utf8'));
   assert.deepEqual([rt.url, rt.token, rt.pid], [s.url, s.token, process.pid]);
-  await assert.rejects(startServer({ dataDir: path.join(root, 'data'), port: 0, runtimeFile: path.join(root, 'x.json'), signals: false, log: () => {} }),
+  await assert.rejects(startServer({ dataDir: path.join(root, 'data'), port: 0, runtimeFile: path.join(root, 'x.json'), signals: false, log: () => {}, manageOllama: false }),
     (e) => e instanceof LockError && /already serving/.test(e.message));
 });
 
@@ -248,6 +248,32 @@ test('agents a hard-killed engine left running are ended on the next start, if s
   await new Promise((r) => setTimeout(r, 500));
   assert.equal(alive(orphan.pid), false);
   await s.stop();
+});
+
+test('serving starts Ollama when none is running, and stopping ends the one it started', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-ollama-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const probe = http.createServer().listen(0, '127.0.0.1');
+  await new Promise((r) => probe.once('listening', r));
+  const port = probe.address().port;
+  await new Promise((r) => probe.close(r));
+  const host = `http://127.0.0.1:${port}`;
+  const ollama = fakeOllama();
+  const s = await startServer({
+    dataDir: path.join(root, 'data'), port: 0, runtimeFile: path.join(root, 'plugin', 'runtime.json'),
+    engineOptions: { makeEmbedder: (cfg) => new Embedder({ ...cfg, fetch: ollama.fetch, retries: 0 }) },
+    ollamaOptions: { host, executable: process.execPath, prefixArgs: [path.join(path.dirname(FAKE), 'fake-ollama.mjs')], startTimeoutMs: 8000 },
+    signals: false, log: () => {},
+  });
+  const started = await s.ollamaReady;
+  assert.equal(started.owned, true);
+  const st = await (await fetch(s.url + '/api/state', { headers: { 'x-rag-token': s.token } })).json();
+  assert.equal(st.ollama.owned, true);
+  assert.ok(alive(started.pid));
+  await s.stop();
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(alive(started.pid), false);
+  assert.equal(await fetch(host + '/api/version').then(() => 'up', () => 'down'), 'down');
 });
 
 test('state reports Ollama, the agents, the settings and the pool', async (t) => {

@@ -34,6 +34,7 @@ import { AgentError, agentFolder, findExecutable, setTracker } from './agents/ru
 import { AgySession } from './agents/agy.js';
 import { AgentPool } from './agents/pool.js';
 import { takeLock, agentRecord, endOrphans, writeRuntime, writeLocal } from './lifecycle.js';
+import { OllamaControl } from './ollama.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const VERSION = JSON.parse(fs.readFileSync(path.join(HERE, '..', '..', 'package.json'), 'utf8')).version;
@@ -98,7 +99,7 @@ function saveUpload(req, file) {
 export async function startServer({
   dataDir, port = DEFAULT_PORT, origins = DEFAULT_ORIGINS, runtimeFile = DEFAULT_RUNTIME,
   engineOptions = {}, agentOptions = {}, openAgy = null, poolOptions = {}, log = console.log, signals = true,
-  onStopped = null,
+  onStopped = null, manageOllama = true, ollamaOptions = {},
 } = {}) {
   const engine = Engine.open(dataDir, engineOptions);
   const dir = engine.dir;
@@ -112,6 +113,12 @@ export async function startServer({
   const bus = new EventEmitter();
   bus.setMaxListeners(50);
   const emit = (event) => bus.emit('event', event);
+
+  /* Ollama starts with the engine and, if the engine started it, stops with
+   * it (t-b2ed74b05c). Recorded like an agent, so a hard kill's orphan is
+   * ended on the next start. */
+  const ollamaCtl = manageOllama ? new OllamaControl({ host: engine.embedder.host, tracker: record, ...ollamaOptions }) : null;
+  let ollamaStart = null; // the ensure() in flight or done
 
   const pool = new AgentPool({
     open: openAgy || (({ resume, model }) => new AgySession({
@@ -137,6 +144,7 @@ export async function startServer({
     current = queue.shift();
     emit({ type: 'queue', queue: queue.map((j) => j.label), current: current.label });
     try {
+      if (ollamaStart) await ollamaStart; // the first job after a start waits for Ollama
       const results = [].concat(await current.run());
       for (const r of results) {
         emit(r.status === 'error' ? { type: 'ingest-error', name: r.doc ? r.doc.name : r.name, error: r.error } : { type: 'doc', status: r.status, doc: r.doc });
@@ -168,6 +176,9 @@ export async function startServer({
     } catch (e) {
       value = { state: e.code === 'model-missing' ? 'model-missing' : e.code === 'ollama-down' ? 'down' : 'error', model: engine.embedder.model, error: e.message };
     }
+    value.managed = Boolean(ollamaCtl);
+    value.owned = Boolean(ollamaCtl && ollamaCtl.owned);
+    if (ollamaCtl && ollamaCtl.startError) value.startError = ollamaCtl.startError;
     ollama = { at: Date.now(), value };
     return value;
   };
@@ -279,6 +290,7 @@ export async function startServer({
       res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' });
       const send = (e) => { if (!res.writableEnded) res.write(JSON.stringify(e) + '\n'); };
       try {
+        if (ollamaStart) await ollamaStart; // a question right after a start waits for Ollama
         const name = body.agent || null;
         const r = await ask(engine, {
           question, agent: name, model: body.model || null, conversationId, k: Number(body.k) || 8,
@@ -407,8 +419,25 @@ export async function startServer({
   writeLocal(path.join(path.dirname(runtimeFile), 'local.json'));
   takeLock(dir, { url, startedAt: new Date().toISOString() }, instance);
 
+  /* Ollama starts after the engine is listening, so the plugin sees the
+   * engine at once; the first embedding waits for Ollama if it must
+   * (t-f8b37daa55). */
+  if (ollamaCtl) {
+    ollamaStart = ollamaCtl.ensure().then((r) => {
+      log(r.owned ? `Ollama started (pid ${r.pid}); it stops with the engine.`
+        : 'Ollama was already running; it is left running when the engine stops, and only the embedding model is unloaded.');
+      ollama = { at: 0, value: null };
+      emit({ type: 'ollama' });
+      return r;
+    }, (e) => {
+      ollamaCtl.startError = e.message;
+      log(`Ollama could not be started: ${e.message}`);
+      return { owned: false, error: e.message };
+    });
+  }
+
   /* Documents an earlier run left half-done are finished first. */
-  if (engine.store.pendingDocs().length) enqueue('resume', () => engine.resume({ onProgress }));
+  if (engine.store.pendingDocs().length) enqueue('resume', async () => { if (ollamaStart) await ollamaStart; return engine.resume({ onProgress }); });
 
   let stopped = null;
   async function stop(reason = 'stopped') {
@@ -425,6 +454,11 @@ export async function startServer({
       for (const res of streams) { try { res.end(); } catch (_) {} }
       await new Promise((r) => server.close(r));
       server.closeAllConnections?.();
+      if (ollamaCtl) {
+        if (ollamaStart) await ollamaStart;
+        const o = await ollamaCtl.stop(engine.embedder.model);
+        log(o.stopped ? 'Ollama stopped.' : o.unloaded ? `Unloaded ${engine.embedder.model} from Ollama; Ollama itself was already running and is left running.` : 'Ollama left as it was.');
+      }
       engine.close();
       record.clear();
       removeRuntime();
@@ -444,7 +478,7 @@ export async function startServer({
     for (const s of ['SIGINT', 'SIGTERM', 'SIGBREAK']) process.on(s, onSignal);
   }
 
-  return { url, port: actualPort, token, engine, pool, stop, orphans, runtimeFile };
+  return { url, port: actualPort, token, engine, pool, stop, orphans, runtimeFile, ollama: ollamaCtl, ollamaReady: ollamaStart };
 }
 
 export { EngineError };
