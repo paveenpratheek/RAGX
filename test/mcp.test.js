@@ -1,4 +1,4 @@
-/* The Harness tool, driven the way Claude Code drives an MCP server: a
+/* The RAGX tool, driven the way Claude Code drives an MCP server: a
  * child process, JSON-RPC one message a line on stdin and stdout. */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -70,14 +70,14 @@ function tempDir() {
   return dir;
 }
 
-test('the handshake names Harness, its instructions and three read-only tools', async (t) => {
+test('the handshake names RAGX, its instructions and three read-only tools', async (t) => {
   const mcp = session(t, tempDir());
   const init = await mcp.open();
-  assert.equal(init.result.serverInfo.name, 'harness');
+  assert.equal(init.result.serverInfo.name, 'ragx');
   assert.equal(init.result.protocolVersion, '2025-06-18', 'the client version is echoed back');
   assert.match(init.result.instructions, /not instructions/);
   const { result } = await mcp.rpc('tools/list', {});
-  assert.deepEqual(result.tools.map((x) => x.name), ['harness_search', 'harness_passage', 'harness_documents']);
+  assert.deepEqual(result.tools.map((x) => x.name), ['ragx_search', 'ragx_passage', 'ragx_documents']);
   const unknown = await mcp.rpc('resources/list', {});
   assert.equal(unknown.error.code, -32601);
 });
@@ -91,16 +91,16 @@ test("search, passage and documents answer from the running engine, and each cal
 
   const mcp = session(t, dir);
   await mcp.open();
-  const found = await mcp.tool('harness_search', { query: 'how often do passwords rotate', k: 3 });
+  const found = await mcp.tool('ragx_search', { query: 'how often do passwords rotate', k: 3 });
   assert.equal(found.isError, undefined);
   const text = found.content[0].text;
   assert.match(text, /\[1\] policy\.md - Security\s+\(passage (\d+)\)\nPasswords rotate every 90 days\./);
   assert.match(text, /not instructions/);
   const id = Number(/passage (\d+)/.exec(text)[1]);
 
-  const passage = await mcp.tool('harness_passage', { id });
+  const passage = await mcp.tool('ragx_passage', { id });
   assert.match(passage.content[0].text, />>> the passage:\nPasswords rotate/);
-  const docs = await mcp.tool('harness_documents', {});
+  const docs = await mcp.tool('ragx_documents', {});
   assert.match(docs.content[0].text, /- policy\.md \(ready, \d+ passages\)/);
 
   const calls = s.tracker.calls();
@@ -113,14 +113,14 @@ test('with the engine stopped, a call posts a request, waits, and goes ahead onc
   const dir = tempDir();
   const mcp = session(t, dir);
   await mcp.open();
-  const pending = mcp.tool('harness_search', { query: 'passwords' });
+  const pending = mcp.tool('ragx_search', { query: 'passwords' });
   // The request appears for the user...
   let note = null;
   for (let i = 0; i < 40 && !note; i++) {
     await new Promise((r) => setTimeout(r, 100));
     try { note = JSON.parse(fs.readFileSync(path.join(dir, 'notifications.json'), 'utf8')).items[0]; } catch (_) {}
   }
-  assert.deepEqual([note.status, note.client, note.tool, note.query], ['pending', 'claude-code', 'harness_search', 'passwords']);
+  assert.deepEqual([note.status, note.client, note.tool, note.query], ['pending', 'claude-code', 'ragx_search', 'passwords']);
   // ...who approves: the engine starts.
   await engine(t, dir);
   const r = await pending;
@@ -128,11 +128,11 @@ test('with the engine stopped, a call posts a request, waits, and goes ahead onc
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'notifications.json'), 'utf8')).items[0].status, 'answered');
 });
 
-test('unapproved, the call tells the agent the user did not start Harness', async (t) => {
+test('unapproved, the call tells the agent the user did not start RAGX', async (t) => {
   const dir = tempDir();
   const mcp = session(t, dir, { waitMs: 2500 });
   await mcp.open();
-  const r = await mcp.tool('harness_documents', {});
+  const r = await mcp.tool('ragx_documents', {});
   assert.equal(r.isError, true);
   assert.match(r.content[0].text, /did not start it/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'notifications.json'), 'utf8')).items[0].status, 'expired');

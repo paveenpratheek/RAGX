@@ -1,7 +1,7 @@
-/* The tracker: every call made to Harness, and what the machine was doing.
+/* The tracker: every call made to RAGX, and what the machine was doing.
  *
  * A call is recorded whoever made it - the user from the plugin page, an
- * agent through the Harness tool, or the command line - with its question,
+ * agent through the RAGX tool, or the command line - with its question,
  * what came back, and how long each part took: embedding (and how much of
  * that was Ollama loading the model), search, and the answering agent
  * (t-acd3fa359a).

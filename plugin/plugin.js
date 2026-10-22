@@ -1,4 +1,4 @@
-/* The Harness plugin: the page ter-manager shows for the RAG engine.
+/* The RAGX plugin: the page ter-manager shows for the RAG engine.
  *
  * It never reaches into ter-manager: everything it asks of the host goes
  * through plugin-host.js messages - open a terminal, remember a preference,
@@ -156,7 +156,7 @@ async function startEngine() {
     ? 'Started in a terminal - ter-manager switched to it. Come back here from the sidebar; this page notices when the engine answers.'
     : 'Open a terminal and run the command above.';
   if (S.tab === 'notifications') toast('Starting the engine - the waiting agent goes ahead once it answers.');
-  await openTerminal(startCommand(), 'Harness engine');
+  await openTerminal(startCommand(), 'RAGX engine');
   schedule();
 }
 
@@ -859,7 +859,7 @@ function tickRunning() {
 
 /* ------------------------------------------------------- notifications */
 
-/* An agent's request to start the engine (t-73f0ae28d8). The Harness tool
+/* An agent's request to start the engine (t-73f0ae28d8). The RAGX tool
  * writes them to notifications.json in the plugin folder, which ter-manager
  * serves whether or not the engine runs, so they are read even while it is
  * stopped. A tool that was killed while waiting leaves its request pending;
@@ -881,7 +881,7 @@ async function loadNotes() {
   for (const n of pending) {
     if (N.seen.has(n.id)) continue;
     N.seen.add(n.id);
-    if (!N.first) toast(`${n.client || 'An agent'} wants to use Harness - see Notifications.`);
+    if (!N.first) toast(`${n.client || 'An agent'} wants to use RAGX - see Notifications.`);
   }
   N.first = false;
   renderNotes();

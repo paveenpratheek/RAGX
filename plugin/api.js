@@ -64,7 +64,7 @@ export class Engine {
     return this.rt;
   }
 
-  /* Requests the Harness tool posted while the engine was stopped - read
+  /* Requests the RAGX tool posted while the engine was stopped - read
    * from the plugin folder, so they show with no engine running. */
   async notifications() {
     try {

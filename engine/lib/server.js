@@ -138,7 +138,7 @@ export async function startServer({
   /* Ingest runs one job at a time: Ollama is the bottleneck, and the engine
    * embeds 32 chunks a step either way (t-00a474ee4e). */
   /* Every call is recorded with who made it (t-acd3fa359a): the X-Rag-Client
-   * header says - "plugin" for the page, "mcp:<agent>" for the Harness tool -
+   * header says - "plugin" for the page, "mcp:<agent>" for the RAGX tool -
    * and a request without one is "other" (t-e5c3b9093f). */
   const tracker = new Tracker(engine.store, { model: modelReader(engine.embedder.host, () => engine.embedder.model) });
   tracker.onLive(emit);
