@@ -1,0 +1,39 @@
+feat(plugin): Tracker and Notifications tabs in the Documents page
+
+The user asked for one place in the page's ribbon to see the tracking, and
+for a tab where an agent's request to start the engine can be seen and
+approved.
+
+Tracker sits beside Settings. One period - last hour, 24 hours, 7 or 30
+days - drives the cards, the chart and the call list, so the calls endpoint
+gained a since filter and the summary an hour range. The cards give the
+calls split by you, agents and the command line, time per call and the
+slowest, embedding time and how much of it was the model loading, model
+loads, and the GPU and the embedding model's VRAM now. The chart draws GPU
+use, VRAM used and the time the model was loaded, breaking the line where
+the engine was stopped, with a readout under the pointer. Each call row
+names the agent from its client (claude-code), with a bar splitting its
+time into loading, embedding, search and the answering agent; clicking it
+opens the question, the timings, every passage returned and an ask's
+answer. Clear history removes calls and keeps the samples. New calls arrive
+over the event stream; the cards refresh every 10 s while the tab is open.
+The page now sends X-Rag-Client: plugin so its calls are filed as yours.
+
+Notifications sits beside it with a badge, and is the one tab that still
+works with the engine stopped: it reads notifications.json from the plugin
+folder every 3 s, toasts a new request, and Approve runs the same start as
+the Start engine button. A request left pending by a tool that was killed
+reads as expired once the tool's wait is over.
+
+Live, in the browser pane against a preview engine: a headless Claude Code
+(haiku, --mcp-config, nothing registered) searched twice; both calls showed
+as claude-code with query, results and embedding time, and when nothing in
+the one indexed document matched, it said so instead of citing it. With
+the engine stopped, a waiting request showed under Notifications with its
+badge. 140 tests pass.
+
+GitX-Builds-On: 05a805e5
+GitX-Relates-To: c6588946
+GitX-Relates-To: 70eb9189
+GitX-Thoughts: t-d82e25095f, t-73f0ae28d8, t-5aa838abc4, t-22785c1ed6, t-37579410a9, t-c47fb21612, t-0df4c61f0e
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
