@@ -5,8 +5,8 @@
  * - runs at the same height (within half a font size) are one line, read
  *   left to right, with a space wherever the gap between runs is wider than
  *   a sliver of the font size;
- * - a gap between lines clearly wider than the page's usual line spacing
- *   starts a new paragraph;
+ * - a gap between lines clearly wider than the page's usual line spacing,
+ *   or a change of type size, starts a new paragraph;
  * - a short line set clearly larger than the body text is a heading, the
  *   larger sizes the higher levels; consecutive heading lines of one size are
  *   one heading, and large type running to three lines is a lead, not a
@@ -114,13 +114,14 @@ export async function extractPdf(buf) {
     const weighted = [];
     for (const l of all) for (let i = 0; i < Math.min(l.text.length, 200); i += 10) weighted.push(Math.round(l.size * 10) / 10);
     const body = median(weighted);
-    const headingSizes = [...new Set(all
-      .filter((l) => l.size >= body * 1.2 && l.text.length <= 150)
-      .map((l) => Math.round(l.size)))].sort((a, b) => b - a);
-    const levelOf = (l) => {
-      if (l.size < body * 1.2 || l.text.length > 150) return 0;
-      return Math.min(headingSizes.indexOf(Math.round(l.size)) + 1, 3);
-    };
+    /* Large figures - "2x -38% -32% -58%" on a cover - are display type, not
+     * headings: made a heading, they would sit over every section after them
+     * in the heading path, and take a level from the real headings. A
+     * heading needs words (t-975aad58c3). */
+    const wordy = (t) => { const letters = (t.match(/\p{L}/gu) || []).length; return letters >= 3 && letters / t.length >= 0.4; };
+    const isHeading = (l) => l.size >= body * 1.2 && l.text.length <= 150 && wordy(l.text);
+    const headingSizes = [...new Set(all.filter(isHeading).map((l) => Math.round(l.size)))].sort((a, b) => b - a);
+    const levelOf = (l) => (isHeading(l) ? Math.min(headingSizes.indexOf(Math.round(l.size)) + 1, 3) : 0);
 
     const blocks = [];
     pages.forEach((lines, i) => {
@@ -158,7 +159,9 @@ export async function extractPdf(buf) {
         }
         endHeading();
         const gap = j > 0 ? lines[j - 1].y - l.y : 0;
-        if (para && gap > spacing * 1.4) { blocks.push(para); para = null; }
+        // A wider gap, or a change of type size, ends a paragraph.
+        const resized = j > 0 && Math.max(l.size, lines[j - 1].size) / Math.min(l.size, lines[j - 1].size) > 1.15;
+        if (para && (gap > spacing * 1.4 || resized)) { blocks.push(para); para = null; }
         if (para) para.text = joinLines(para.text, l.text);
         else para = { kind: 'para', text: l.text, page };
       });

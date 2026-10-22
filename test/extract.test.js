@@ -117,6 +117,20 @@ test('pdf joins a two-line title, reads a large-type lead as text and letter-spa
   ]);
 });
 
+test('pdf reads large figures as text, so they take no heading level from the sections', async () => {
+  const out = await extract(makePdf([[
+    { text: 'GitX System 1', size: 28, y: 740 },
+    { text: '2x -38% -32% -58%', size: 22, y: 700 },
+    { text: 'Fresh agents answered the held-out questions.', y: 670 },
+    { text: '3 Architecture', size: 14, y: 630 },
+    { text: 'The pieces and how they connect.', y: 600 },
+  ]]), '.pdf');
+  assert.deepEqual(kinds(out), [
+    'heading1:GitX System 1', 'para:2x -38% -32% -58%', 'para:Fresh agents answered the held-out questions.',
+    'heading2:3 Architecture', 'para:The pieces and how they connect.',
+  ]);
+});
+
 test('a pdf with no text layer is reported as scanned', async () => {
   await assert.rejects(extract(makePdf([[], []]), '.pdf'), (e) => e instanceof ExtractError && e.code === 'scanned');
 });
