@@ -5,7 +5,7 @@
  */
 import { DatabaseSync } from 'node:sqlite';
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 const SCHEMA = `
 create table if not exists meta (
@@ -91,6 +91,46 @@ create table if not exists sources (
   page_to         integer,
   text            text not null,
   primary key (conversation_id, n)
+);
+
+create table if not exists calls (
+  id        integer primary key,
+  at        integer not null,
+  ms        integer,
+  source    text not null,
+  client    text,
+  kind      text not null,
+  question  text,
+  agent     text,
+  model     text,
+  embed_ms  integer,
+  load_ms   integer,
+  search_ms integer,
+  agent_ms  integer,
+  results   integer,
+  detail    text,
+  error     text
+);
+create index if not exists calls_at on calls (at);
+
+create table if not exists samples (
+  at           integer primary key,
+  gpu_util     real,
+  vram_used    integer,
+  vram_total   integer,
+  model_loaded integer,
+  model_vram   integer
+);
+
+create table if not exists samples_min (
+  minute         integer primary key,
+  n              integer not null,
+  gpu_util_sum   real not null default 0,
+  gpu_util_max   real,
+  vram_used_max  integer,
+  vram_total     integer,
+  model_loaded_n integer not null default 0,
+  model_vram_max integer
 );
 `;
 

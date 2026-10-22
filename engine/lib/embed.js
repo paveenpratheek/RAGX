@@ -114,11 +114,20 @@ export class Embedder {
     return { model: this.model, dim: this.dim, ctx: this.ctx };
   }
 
-  async embed(inputs) {
+  async embed(inputs, stats = null) {
     const out = [];
     for (let i = 0; i < inputs.length; i += this.batch) {
       const part = inputs.slice(i, i + this.batch);
+      const started = Date.now();
       const data = await this.post('/api/embed', { model: this.model, input: part, truncate: false });
+      /* Ollama times its own work in nanoseconds, and load_duration is the
+       * part spent loading the model - how a call that woke the GPU shows up
+       * in the tracker (t-acd3fa359a). */
+      if (stats) {
+        stats.ms = (stats.ms || 0) + (Date.now() - started);
+        stats.loadMs = (stats.loadMs || 0) + Math.round((data.load_duration || 0) / 1e6);
+        stats.tokens = (stats.tokens || 0) + (data.prompt_eval_count || 0);
+      }
       const vecs = data.embeddings || [];
       if (vecs.length !== part.length) throw new EmbedError('ollama', `Ollama returned ${vecs.length} embeddings for ${part.length} inputs.`);
       for (const v of vecs) {
@@ -132,7 +141,7 @@ export class Embedder {
 
   /* The prefixes are empty unless set (t-28f8b58f1a): on a small test nomic
    * did no better with its search_query / search_document prefixes. */
-  embedDocuments(texts) { return this.embed(texts.map((t) => this.docPrefix + t)); }
+  embedDocuments(texts, stats) { return this.embed(texts.map((t) => this.docPrefix + t), stats); }
 
-  async embedQuery(text) { return (await this.embed([this.queryPrefix + text]))[0]; }
+  async embedQuery(text, stats) { return (await this.embed([this.queryPrefix + text], stats))[0]; }
 }

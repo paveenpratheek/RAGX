@@ -35,6 +35,7 @@ import { AgySession } from './agents/agy.js';
 import { AgentPool } from './agents/pool.js';
 import { takeLock, agentRecord, endOrphans, writeRuntime, writeLocal } from './lifecycle.js';
 import { OllamaControl } from './ollama.js';
+import { Tracker, modelReader } from './tracker.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const VERSION = JSON.parse(fs.readFileSync(path.join(HERE, '..', '..', 'package.json'), 'utf8')).version;
@@ -99,7 +100,7 @@ function saveUpload(req, file) {
 export async function startServer({
   dataDir, port = DEFAULT_PORT, origins = DEFAULT_ORIGINS, runtimeFile = DEFAULT_RUNTIME,
   engineOptions = {}, agentOptions = {}, openAgy = null, poolOptions = {}, log = console.log, signals = true,
-  onStopped = null, manageOllama = true, ollamaOptions = {},
+  onStopped = null, manageOllama = true, ollamaOptions = {}, sampleResources = true,
 } = {}) {
   const engine = Engine.open(dataDir, engineOptions);
   const dir = engine.dir;
@@ -136,6 +137,18 @@ export async function startServer({
 
   /* Ingest runs one job at a time: Ollama is the bottleneck, and the engine
    * embeds 32 chunks a step either way (t-00a474ee4e). */
+  /* Every call is recorded with who made it (t-acd3fa359a): the X-Rag-Client
+   * header says - "plugin" for the page, "mcp:<agent>" for the Harness tool -
+   * and a request without one is "other" (t-e5c3b9093f). */
+  const tracker = new Tracker(engine.store, { model: modelReader(engine.embedder.host, () => engine.embedder.model) });
+  tracker.onCall((row) => emit({ type: 'call', call: row && { ...row, detail: undefined } }));
+  const whoIs = (req) => {
+    const client = String(req.headers['x-rag-client'] || '').slice(0, 300) || null;
+    const source = !client ? 'other' : client === 'plugin' ? 'you' : client.startsWith('mcp') ? 'agent' : 'other';
+    return { source, client };
+  };
+  const passageDetail = (p) => ({ n: p.n, docName: p.docName, heading: p.heading, pageFrom: p.pageFrom, pageTo: p.pageTo, score: p.score, chunkIds: p.chunkIds, text: p.text });
+
   const queue = [];
   let current = null;
   const onProgress = ({ doc, phase, done, total }) => emit({ type: 'ingest', docId: doc && doc.id, name: doc && doc.name, phase, done, total });
@@ -148,9 +161,17 @@ export async function startServer({
       const results = [].concat(await current.run());
       for (const r of results) {
         emit(r.status === 'error' ? { type: 'ingest-error', name: r.doc ? r.doc.name : r.name, error: r.error } : { type: 'doc', status: r.status, doc: r.doc });
+        const t = r.timings || {};
+        tracker.record({
+          ms: t.ms ?? null, source: current.who.source, client: current.who.client, kind: current.who.kind,
+          question: r.doc ? r.doc.name : r.name, timings: t, results: r.doc ? r.doc.chunks : 0,
+          detail: { docId: r.doc && r.doc.id, status: r.status, pages: r.doc && r.doc.pages, chunks: r.doc && r.doc.chunks, rechunked: r.rechunked || 0 },
+          error: r.status === 'error' ? r.error : null,
+        });
       }
     } catch (e) {
       emit({ type: 'ingest-error', name: current.label, error: e.message });
+      tracker.record({ source: current.who.source, client: current.who.client, kind: current.who.kind, question: current.label, error: e.message });
     } finally {
       if (current.cleanup) current.cleanup();
       current = null;
@@ -159,8 +180,8 @@ export async function startServer({
     }
   };
   // Announced on joining, so a job waiting behind another shows (t-770d2af24b).
-  const enqueue = (label, run, cleanup) => {
-    queue.push({ label, run, cleanup });
+  const enqueue = (label, run, cleanup, who = { source: 'engine', client: null, kind: 'ingest' }) => {
+    queue.push({ label, run, cleanup, who });
     emit({ type: 'queue', queue: queue.map((j) => j.label), current: current ? current.label : null });
     pump();
     return queue.length + (current ? 1 : 0);
@@ -227,7 +248,32 @@ export async function startServer({
       });
     }
 
-    if (m('GET', /^\/api\/docs$/)) return json(200, { docs: engine.list() });
+    if (m('GET', /^\/api\/docs$/)) {
+      const docs = engine.list();
+      // The page lists documents all the time; an agent asking is a call worth seeing (t-6df26b68a6).
+      const who = whoIs(req);
+      if (who.source === 'agent') tracker.record({ ...who, kind: 'documents', ms: 0, results: docs.length, detail: { docs: docs.map((d) => ({ id: d.id, name: d.name, status: d.status, pages: d.pages, chunks: d.chunks })) } });
+      return json(200, { docs });
+    }
+
+    if (m('GET', /^\/api\/tracker\/summary$/)) {
+      const range = { day: 86400e3, week: 7 * 86400e3, month: 30 * 86400e3, all: Date.now() }[url.searchParams.get('range') || 'day'] || 86400e3;
+      return json(200, tracker.summary(range));
+    }
+    if (m('GET', /^\/api\/tracker\/calls$/)) {
+      const sp = url.searchParams;
+      return json(200, { calls: tracker.calls({ limit: sp.get('limit'), before: sp.get('before'), source: sp.get('source'), kind: sp.get('kind') }) });
+    }
+    if ((p = m('GET', /^\/api\/tracker\/calls\/(\d+)$/))) {
+      const c = tracker.call(Number(p[0]));
+      if (!c) throw new HttpError(404, 'not-found', 'No such call.');
+      return json(200, c);
+    }
+    if (m('DELETE', /^\/api\/tracker\/calls$/)) { tracker.clear(); return json(200, { cleared: true }); }
+    if (m('GET', /^\/api\/tracker\/samples$/)) {
+      const range = { hour: 3600e3, day: 86400e3, week: 7 * 86400e3, month: 30 * 86400e3 }[url.searchParams.get('range') || 'hour'] || 3600e3;
+      return json(200, { samples: tracker.samples(range), now: tracker.last });
+    }
 
     if (m('POST', /^\/api\/docs$/)) {
       const name = decodeURIComponent(String(req.headers['x-file-name'] || '')).trim();
@@ -235,7 +281,7 @@ export async function startServer({
       fs.mkdirSync(path.join(dir, 'incoming'), { recursive: true });
       const tmp = path.join(dir, 'incoming', crypto.randomBytes(8).toString('hex') + path.extname(name).toLowerCase());
       const bytes = await saveUpload(req, tmp);
-      const position = enqueue(name, () => engine.ingest(tmp, { name, sourcePath: null, onProgress }), () => fs.rmSync(tmp, { force: true }));
+      const position = enqueue(name, () => engine.ingest(tmp, { name, sourcePath: null, onProgress }), () => fs.rmSync(tmp, { force: true }), { ...whoIs(req), kind: 'ingest' });
       return json(202, { queued: name, bytes, position });
     }
 
@@ -243,7 +289,7 @@ export async function startServer({
       const { path: file } = await readJson(req);
       if (!file || !path.isAbsolute(String(file))) throw new HttpError(400, 'bad-path', 'Give the full path of a file on this machine.');
       if (!fs.existsSync(file) || !fs.statSync(file).isFile()) throw new HttpError(404, 'not-found', `No file at ${file}.`);
-      const position = enqueue(path.basename(file), () => engine.ingest(String(file), { onProgress }));
+      const position = enqueue(path.basename(file), () => engine.ingest(String(file), { onProgress }), null, { ...whoIs(req), kind: 'ingest' });
       return json(202, { queued: path.basename(file), position });
     }
 
@@ -257,7 +303,7 @@ export async function startServer({
       const id = Number(p[0]);
       const doc = engine.store.doc(id);
       if (!doc) throw new HttpError(404, 'not-found', `No document with id ${id}.`);
-      return json(202, { queued: doc.name, position: enqueue(doc.name, () => engine.reindex(id, { onProgress })) });
+      return json(202, { queued: doc.name, position: enqueue(doc.name, () => engine.reindex(id, { onProgress }), null, { ...whoIs(req), kind: 'reindex' }) });
     }
 
     if ((p = m('GET', /^\/api\/chunks\/(\d+)$/))) {
@@ -266,13 +312,19 @@ export async function startServer({
       const before = engine.store.chunkAt(c.doc_id, c.ord - 1);
       const after = engine.store.chunkAt(c.doc_id, c.ord + 1);
       const view = (x) => x && { id: x.id, ord: x.ord, heading: x.heading, text: x.text, pageFrom: x.page_from, pageTo: x.page_to };
-      return json(200, { docId: c.doc_id, docName: c.doc_name, chunk: view(c), before: view(before), after: view(after) });
+      const out = { docId: c.doc_id, docName: c.doc_name, chunk: view(c), before: view(before), after: view(after) };
+      tracker.record({ ...whoIs(req), kind: 'passage', question: `${c.doc_name} #${c.id}`, ms: 0, results: 1, detail: out });
+      return json(200, out);
     }
 
     if (m('POST', /^\/api\/search$/)) {
       const { q, k } = await readJson(req);
       if (!q) throw new HttpError(400, 'no-question', 'Give the search in q.');
-      return json(200, await engine.search(String(q), { k: Number(k) || 8 }));
+      const started = Date.now();
+      const r = await engine.search(String(q), { k: Number(k) || 8 });
+      tracker.record({ ...whoIs(req), kind: 'search', question: String(q), ms: Date.now() - started, timings: r.timings,
+        results: r.passages.length, detail: { passages: r.passages.map(passageDetail), warning: r.warning } });
+      return json(200, r);
     }
 
     if (m('POST', /^\/api\/ask$/)) {
@@ -289,6 +341,9 @@ export async function startServer({
       res.on('close', () => { if (!res.writableFinished) ac.abort(); });
       res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' });
       const send = (e) => { if (!res.writableEnded) res.write(JSON.stringify(e) + '\n'); };
+      const started = Date.now();
+      const who = whoIs(req);
+      let shown = [];
       try {
         if (ollamaStart) await ollamaStart; // a question right after a start waits for Ollama
         const name = body.agent || null;
@@ -296,14 +351,19 @@ export async function startServer({
           question, agent: name, model: body.model || null, conversationId, k: Number(body.k) || 8,
           signal: ac.signal, pool, agentOptions: (name && agentOptions[name]) || (!name && agentOptions[engine.store.getMeta('agent', 'claude')]) || {},
           // First, before the agent's wait (t-3569a2ad7e).
-          onSources: ({ sources, fresh }) => send({ type: 'sources', sources: sources.map((s) => ({ ...s, fresh: fresh.includes(s.n) })) }),
+          onSources: ({ sources, fresh }) => { shown = sources; send({ type: 'sources', sources: sources.map((s) => ({ ...s, fresh: fresh.includes(s.n) })) }); },
           onDelta: (text) => send({ type: 'delta', text }),
         });
         send({ type: 'done', conversationId: r.conversationId, answer: r.answer, cited: r.cited.map((s) => s.n), unknown: r.unknown,
           warnings: r.warnings, agent: r.agent, model: r.model, ms: r.ms ?? null, asked: r.asked });
+        tracker.record({ ...who, kind: 'ask', question, agent: r.agent, model: r.model, ms: Date.now() - started, timings: r.timings,
+          results: r.sources.length, detail: { conversationId: r.conversationId, passages: r.sources.map(passageDetail), answer: r.answer,
+            cited: r.cited.map((s) => s.n), unknown: r.unknown, warnings: r.warnings } });
         if (r.agent === 'agy') { refill(); emit({ type: 'pool', pool: pool.list() }); }
       } catch (e) {
         send({ type: 'error', code: e.code || 'failed', message: e.message, status: statusOf(e) });
+        tracker.record({ ...who, kind: 'ask', question, agent: body.agent || null, model: body.model || null, ms: Date.now() - started,
+          results: shown.length, detail: { conversationId, passages: shown.map(passageDetail) }, error: e.message });
       } finally {
         inflight.delete(ac);
         res.end();
@@ -348,7 +408,7 @@ export async function startServer({
     }
 
     if (m('POST', /^\/api\/reembed$/)) {
-      return json(202, { queued: 'reembed', position: enqueue('reembed', () => engine.reembed({ onProgress })) });
+      return json(202, { queued: 'reembed', position: enqueue('reembed', () => engine.reembed({ onProgress }), null, { ...whoIs(req), kind: 'reembed' }) });
     }
 
     if (m('POST', /^\/api\/agents\/warm$/)) {
@@ -391,7 +451,7 @@ export async function startServer({
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
         'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
-        'access-control-allow-headers': 'X-Rag-Token, Content-Type, X-File-Name',
+        'access-control-allow-headers': 'X-Rag-Token, Content-Type, X-File-Name, X-Rag-Client',
         'access-control-max-age': '600',
       });
       return res.end();
@@ -419,6 +479,8 @@ export async function startServer({
   writeLocal(path.join(path.dirname(runtimeFile), 'local.json'));
   takeLock(dir, { url, startedAt: new Date().toISOString() }, instance);
 
+  if (sampleResources) tracker.start();
+
   /* Ollama starts after the engine is listening, so the plugin sees the
    * engine at once; the first embedding waits for Ollama if it must
    * (t-f8b37daa55). */
@@ -437,7 +499,7 @@ export async function startServer({
   }
 
   /* Documents an earlier run left half-done are finished first. */
-  if (engine.store.pendingDocs().length) enqueue('resume', async () => { if (ollamaStart) await ollamaStart; return engine.resume({ onProgress }); });
+  if (engine.store.pendingDocs().length) enqueue('resume', async () => { if (ollamaStart) await ollamaStart; return engine.resume({ onProgress }); }, null, { source: 'engine', client: null, kind: 'resume' });
 
   let stopped = null;
   async function stop(reason = 'stopped') {
@@ -446,6 +508,7 @@ export async function startServer({
     stopped = (async () => {
       log(`Stopping (${reason})...`);
       engine.stopRequested = true;
+      tracker.stop();
       queue.length = 0;
       for (const ac of inflight) ac.abort();
       await pool.closeAll();
@@ -478,7 +541,7 @@ export async function startServer({
     for (const s of ['SIGINT', 'SIGTERM', 'SIGBREAK']) process.on(s, onSignal);
   }
 
-  return { url, port: actualPort, token, engine, pool, stop, orphans, runtimeFile, ollama: ollamaCtl, ollamaReady: ollamaStart };
+  return { url, port: actualPort, token, engine, pool, stop, orphans, runtimeFile, ollama: ollamaCtl, ollamaReady: ollamaStart, tracker };
 }
 
 export { EngineError };

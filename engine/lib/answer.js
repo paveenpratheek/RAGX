@@ -90,7 +90,7 @@ export async function ask(engine, { question, agent = null, model = null, conver
    * (t-3e974fe2a3). */
   const history = conv ? store.messages(conv.id).filter((m) => m.role === 'user') : [];
   const searchFor = history.length ? `${history[history.length - 1].text} ${question}` : question;
-  const { passages, warning: searchWarning } = await engine.search(searchFor, { k });
+  const { passages, warning: searchWarning, timings: searchTimings = {} } = await engine.search(searchFor, { k });
 
   const earlier = conv ? store.sources(conv.id) : [];
   const byKey = new Map(earlier.map((s) => [keyOf(s.chunkIds), s]));
@@ -110,13 +110,14 @@ export async function ask(engine, { question, agent = null, model = null, conver
    * (t-786c2f8aad). */
   if (!earlier.length && !fresh.length) {
     return { conversationId: null, answer: 'Nothing in the indexed documents matches this question.', sources: [], cited: [], unknown: [],
-      warnings: [searchWarning].filter(Boolean), agent: who.name, model: who.model, asked: false };
+      warnings: [searchWarning].filter(Boolean), agent: who.name, model: who.model, asked: false, timings: { ...searchTimings, agentMs: 0 } };
   }
 
   const prompt = buildPrompt({ question, fresh, earlier: earlier.length ? next - 1 - fresh.length : 0 });
   onSources({ sources: shown, fresh: fresh.map((s) => s.n) });
 
   let result;
+  const agentStarted = Date.now();
   let session = null;
   if (pool && who.name === 'agy') {
     session = await pool.session(conv ? conv.id : null, { resume: conv ? conv.session : null, model: who.model });
@@ -157,6 +158,7 @@ export async function ask(engine, { question, agent = null, model = null, conver
     isolation: result.isolation || null,
     ms: result.ms,
     asked: true,
+    timings: { ...searchTimings, agentMs: Date.now() - agentStarted },
   };
 }
 

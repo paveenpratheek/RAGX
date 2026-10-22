@@ -25,7 +25,7 @@ async function serve(t, { claude = 'answer', agy = 'echo', dir = null, poolOptio
       claude: { executable: process.execPath, prefixArgs: [FAKE, 'claude', claude], timeoutMs: 10_000 },
       agy: { executable: process.execPath, prefixArgs: [FAKE, 'agy', agy], timeoutMs: 10_000 },
     },
-    poolOptions, signals: false, log: () => {}, manageOllama: false,
+    poolOptions, signals: false, log: () => {}, manageOllama: false, sampleResources: false,
   });
   if (!dir) t.after(async () => { await s.stop(); fs.rmSync(root, { recursive: true, force: true }); });
   const call = (p, { method = 'GET', body, headers = {}, token = s.token, raw = false, signal } = {}) => fetch(s.url + p, {
@@ -274,6 +274,38 @@ test('serving starts Ollama when none is running, and stopping ends the one it s
   await new Promise((r) => setTimeout(r, 300));
   assert.equal(alive(started.pid), false);
   assert.equal(await fetch(host + '/api/version').then(() => 'up', () => 'down'), 'down');
+});
+
+test('every call is tracked with who made it, and the tracker API reports it', async (t) => {
+  const { call } = await serve(t);
+  const tracked = waitFor(call, (e) => e.type === 'call' && e.call.kind === 'ingest');
+  await tracked.connected;
+  await withDoc(call);
+  assert.equal((await tracked).call.source, 'other', 'a request that names no client');
+  await call('/api/search', { method: 'POST', body: { q: 'rent' }, headers: { 'x-rag-client': 'plugin' } });
+  await call('/api/search', { method: 'POST', body: { q: 'late fee' }, headers: { 'x-rag-client': 'mcp:claude-code/2.1.307 cwd=E:\\work' } });
+  await call('/api/docs', { headers: { 'x-rag-client': 'mcp:claude-code/2.1.307' } });
+  await call('/api/docs', { headers: { 'x-rag-client': 'plugin' } });
+  (await call('/api/ask', { method: 'POST', body: { question: 'When is rent due?', agent: 'claude' }, headers: { 'x-rag-client': 'plugin' } })).text();
+  await new Promise((r) => setTimeout(r, 300));
+
+  const { calls } = await (await call('/api/tracker/calls')).json();
+  assert.deepEqual(calls.map((c) => `${c.source}:${c.kind}`), ['you:ask', 'agent:documents', 'agent:search', 'you:search', 'other:ingest'],
+    'the page listing documents is not a call; an agent doing it is');
+  const agentSearch = await (await call(`/api/tracker/calls/${calls[2].id}`)).json();
+  assert.equal(agentSearch.client, 'mcp:claude-code/2.1.307 cwd=E:\\work');
+  assert.equal(agentSearch.question, 'late fee');
+  assert.ok(agentSearch.detail.passages[0].text.length > 0, 'what came back is kept');
+  const ask = await (await call(`/api/tracker/calls/${calls[0].id}`)).json();
+  assert.equal(ask.agent, 'claude');
+  assert.ok(ask.detail.answer && ask.detail.cited);
+  assert.ok(ask.agent_ms >= 0 && ask.ms >= ask.agent_ms);
+
+  const s = await (await call('/api/tracker/summary?range=day')).json();
+  assert.equal(s.calls, 5);
+  assert.deepEqual([s.bySource.you.calls, s.bySource.agent.calls], [2, 2]);
+  assert.equal((await call('/api/tracker/calls', { method: 'DELETE' })).status, 200);
+  assert.equal((await (await call('/api/tracker/calls')).json()).calls.length, 0);
 });
 
 test('state reports Ollama, the agents, the settings and the pool', async (t) => {

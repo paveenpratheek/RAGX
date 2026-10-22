@@ -12,6 +12,7 @@ import { Engine, EngineError } from './lib/engine.js';
 import { EmbedError } from './lib/embed.js';
 import { ask, label, AskError, AgentError, AGENTS } from './lib/answer.js';
 import { startServer } from './lib/server.js';
+import { Tracker } from './lib/tracker.js';
 import { LockError, writeLocal, REPO } from './lib/lifecycle.js';
 
 /* config set keys and the meta entries they write. */
@@ -146,7 +147,10 @@ async function main(argv) {
       case 'search': {
         const question = rest.join(' ').trim();
         if (!question) throw new UsageError('search needs a question.');
-        const { passages, warning } = await engine.search(question, { k: Number(opts.k) || 8 });
+        const started = Date.now();
+        const { passages, warning, timings } = await engine.search(question, { k: Number(opts.k) || 8 });
+        new Tracker(engine.store).record({ source: 'cli', client: 'cli', kind: 'search', question, ms: Date.now() - started, timings,
+          results: passages.length, detail: { passages: passages.map((p) => ({ docName: p.docName, heading: p.heading, pageFrom: p.pageFrom, pageTo: p.pageTo, score: p.score, chunkIds: p.chunkIds, text: p.text })), warning } });
         if (opts.json) { console.log(JSON.stringify({ passages, warning }, null, 2)); return 0; }
         if (warning) console.log(`! ${warning}\n`);
         if (!passages.length) console.log('No passages found.');
@@ -173,6 +177,9 @@ async function main(argv) {
             onDelta: opts.json ? () => {} : (d) => process.stdout.write(d),
           });
         } finally { process.off('SIGINT', stop); }
+        new Tracker(engine.store).record({ source: 'cli', client: 'cli', kind: 'ask', question, agent: r.agent, model: r.model,
+          ms: r.timings ? (r.timings.embedMs + r.timings.searchMs + r.timings.agentMs) : null, timings: r.timings, results: r.sources.length,
+          detail: { conversationId: r.conversationId, answer: r.answer, cited: r.cited.map((s) => s.n), unknown: r.unknown } });
         if (opts.json) { console.log(JSON.stringify(r, null, 2)); return 0; }
         if (!r.asked) console.log(r.answer);
         console.log('');

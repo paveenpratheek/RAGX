@@ -103,19 +103,21 @@ export class Engine {
     let doc = this.store.doc(id);
     const sig = this.embedder.signature;
     const say = (phase, done, total) => onProgress({ doc, phase, done, total });
+    const started = Date.now();
+    const stats = {}; // embedding time, model load time and tokens, for the tracker
     try {
       /* A run cut short while embedding, with this same model, picks up at
        * the first chunk without a vector. Anything else starts over
        * (t-b1b91e9fd2). */
       const canResume = doc.status === STATUS.embedding && doc.embedded_with === sig && this.store.docChunkIds(id).length > 0;
       let built = { target: null, rechunked: 0 };
-      if (canResume) await this.embedMissing(doc, say);
-      else built = await this.build(doc, say);
+      if (canResume) await this.embedMissing(doc, say, stats);
+      else built = await this.build(doc, say, stats);
       this.store.setReady(id, sig);
       doc = this.store.doc(id);
       this.indexAdd(id);
       say('ready', doc.chunks, doc.chunks);
-      return { status: label, doc, ...built };
+      return { status: label, doc, ...built, timings: { ms: Date.now() - started, embedMs: stats.ms || 0, loadMs: stats.loadMs || 0 } };
     } catch (e) {
       /* A document that cannot be read is in error for good. Ollama stopped,
        * or the model not pulled, leaves the status as it was, so the next
@@ -126,7 +128,7 @@ export class Engine {
       else this.store.setError(id, e.message);
       doc = this.store.doc(id);
       say('error');
-      return { status: 'error', doc, error: e.message, code: e.code };
+      return { status: 'error', doc, error: e.message, code: e.code, timings: { ms: Date.now() - started, embedMs: stats.ms || 0, loadMs: stats.loadMs || 0 } };
     }
   }
 
@@ -136,7 +138,7 @@ export class Engine {
     return this.embedder.ctx;
   }
 
-  async build(doc, say) {
+  async build(doc, say, stats = null) {
     this.store.setStatus(doc.id, STATUS.extracting);
     say('extracting');
     const { blocks, pages } = await extract(fs.readFileSync(this.fileOf(doc)), doc.ext);
@@ -154,7 +156,7 @@ export class Engine {
       this.store.replaceChunks(doc.id, chunks);
       this.store.setEmbedding(doc.id, this.embedder.signature);
       try {
-        await this.embedMissing(doc, say);
+        await this.embedMissing(doc, say, stats);
         return { target, rechunked: tries };
       } catch (e) {
         if (!(e instanceof EmbedError && e.code === 'too-long')) throw e;
@@ -164,7 +166,7 @@ export class Engine {
     throw lastError;
   }
 
-  async embedMissing(doc, say) {
+  async embedMissing(doc, say, stats = null) {
     const todo = this.store.unembedded(doc.id);
     const total = this.store.docChunkIds(doc.id).length;
     let done = total - todo.length;
@@ -172,7 +174,7 @@ export class Engine {
     for (let i = 0; i < todo.length; i += STEP) {
       if (this.stopRequested) throw new EngineError('stopped', 'Stopped; the rest is embedded on the next start.');
       const part = todo.slice(i, i + STEP);
-      const vectors = await this.embedder.embedDocuments(part.map((c) => chunkInput(doc.name, c.heading, c.text)));
+      const vectors = await this.embedder.embedDocuments(part.map((c) => chunkInput(doc.name, c.heading, c.text)), stats);
       this.store.putVectors(part.map((c, j) => ({ id: c.id, vector: vectors[j] })));
       done += part.length;
       say('embedding', done, total);
@@ -212,16 +214,18 @@ export class Engine {
     const index = this.loadIndex();
     let queryVector = null;
     let warning = null;
+    const stats = {};
     if (index) {
       try {
-        queryVector = await this.embedder.embedQuery(question);
+        queryVector = await this.embedder.embedQuery(question, stats);
       } catch (e) {
         if (!(e instanceof EmbedError)) throw e;
         warning = `Keyword search only - ${e.message}`;
       }
     }
+    const t = Date.now();
     const passages = hybridSearch({ store: this.store, index, question, queryVector, k });
-    return { passages, warning };
+    return { passages, warning, timings: { embedMs: stats.ms || 0, loadMs: stats.loadMs || 0, searchMs: Date.now() - t } };
   }
 
   /* The model is checked with Ollama before it is saved, so a typo or a chat
