@@ -11,6 +11,8 @@ import path from 'node:path';
 import { Engine, EngineError } from './lib/engine.js';
 import { EmbedError } from './lib/embed.js';
 import { ask, label, AskError, AgentError, AGENTS } from './lib/answer.js';
+import { startServer } from './lib/server.js';
+import { LockError } from './lib/lifecycle.js';
 
 /* config set keys and the meta entries they write. */
 const SETTINGS = {
@@ -29,6 +31,8 @@ const USAGE = `usage: node engine/cli.js --data-dir <folder> <command>
   ask <question>          a cited answer from Claude or agy
                           [--agent claude|agy] [--model <name>] [--conversation <id>] [--json]
   conversations [<id>]    past conversations, or one in full
+  serve                   run as the plugin's server on 127.0.0.1  [--port 7780]
+                          [--origin <url,url>]  (Ctrl+C stops it)
   list                    every document and its status
   remove <id>             forget a document and its copy
   stats                   counts, model and index size
@@ -93,6 +97,23 @@ async function main(argv) {
   const [command, ...rest] = args;
   if (opts.help || !command) { console.log(USAGE); return command ? 0 : 2; }
   if (!opts['data-dir']) throw new UsageError('Give the folder the index lives in: --data-dir <folder>');
+
+  /* The server owns its engine for as long as it runs, so it starts before
+   * the open-and-close every other command does. */
+  if (command === 'serve') {
+    const s = await startServer({
+      dataDir: opts['data-dir'],
+      port: opts.port ? Number(opts.port) : undefined,
+      origins: opts.origin ? opts.origin.split(',').map((o) => o.trim()) : undefined,
+      onStopped: () => process.exit(0),
+    });
+    for (const o of s.orphans) console.log(`Ended ${o.image} (pid ${o.pid}), left running by an earlier engine.`);
+    console.log(`RAG engine ready at ${s.url}`);
+    console.log(`  data     ${s.engine.dir}`);
+    console.log(`  runtime  ${s.runtimeFile}`);
+    console.log('  Ctrl+C stops it; closing the plugin does not.');
+    return null;
+  }
 
   const engine = Engine.open(opts['data-dir']);
   try {
@@ -238,9 +259,9 @@ async function main(argv) {
   }
 }
 
-main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (e) => {
+main(process.argv.slice(2)).then((code) => { if (code !== null) process.exitCode = code; }, (e) => {
   if (e instanceof UsageError) { console.error(e.message + '\n\n' + USAGE); process.exitCode = 2; return; }
-  if (e instanceof EngineError || e instanceof EmbedError || e instanceof AskError || e instanceof AgentError) {
+  if (e instanceof EngineError || e instanceof EmbedError || e instanceof AskError || e instanceof AgentError || e instanceof LockError) {
     console.error(e.message);
     process.exitCode = e.code === 'cancelled' ? 130 : 1;
     return;

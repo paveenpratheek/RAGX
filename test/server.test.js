@@ -1,0 +1,247 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { startServer } from '../engine/lib/server.js';
+import { Embedder } from '../engine/lib/embed.js';
+import { alive, LockError } from '../engine/lib/lifecycle.js';
+import { fakeOllama } from './ollama-fake.js';
+
+const FAKE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fake-agent.mjs');
+const ORIGIN = 'http://127.0.0.1:7070';
+const lease = '# Lease\n\nRent of 1,200 is due on the first of each month.\n\n## Fees\n\nA late fee of 50 applies after five days.\n';
+
+async function serve(t, { claude = 'answer', agy = 'echo', dir = null, poolOptions = {} } = {}) {
+  const root = dir || fs.mkdtempSync(path.join(os.tmpdir(), 'rag-server-'));
+  const ollama = fakeOllama();
+  const s = await startServer({
+    dataDir: path.join(root, 'data'), port: 0, runtimeFile: path.join(root, 'plugin', 'runtime.json'),
+    engineOptions: { makeEmbedder: (cfg) => new Embedder({ ...cfg, fetch: ollama.fetch, retries: 0 }) },
+    agentOptions: {
+      claude: { executable: process.execPath, prefixArgs: [FAKE, 'claude', claude], timeoutMs: 10_000 },
+      agy: { executable: process.execPath, prefixArgs: [FAKE, 'agy', agy], timeoutMs: 10_000 },
+    },
+    poolOptions, signals: false, log: () => {},
+  });
+  if (!dir) t.after(async () => { await s.stop(); fs.rmSync(root, { recursive: true, force: true }); });
+  const call = (p, { method = 'GET', body, headers = {}, token = s.token, raw = false, signal } = {}) => fetch(s.url + p, {
+    method, signal,
+    headers: { 'x-rag-token': token, origin: ORIGIN, ...(body && !raw ? { 'content-type': 'application/json' } : {}), ...headers },
+    body: body === undefined ? undefined : raw ? body : JSON.stringify(body),
+  });
+  return { s, root, call };
+}
+
+const lines = async (res) => (await res.text()).trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+
+/* Read the event stream until an event matches, or fail after a while. */
+async function waitFor(call, match, ms = 10_000) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ms);
+  const res = await call('/api/events', { signal: ac.signal });
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) throw new Error('event stream ended');
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const e = JSON.parse(buf.slice(0, nl));
+        buf = buf.slice(nl + 1);
+        if (match(e)) return e;
+      }
+    }
+  } finally { clearTimeout(timer); ac.abort(); }
+}
+
+async function withDoc(call) {
+  const ready = waitFor(call, (e) => e.type === 'doc');
+  await new Promise((r) => setTimeout(r, 50));
+  const up = await call('/api/docs', { method: 'POST', raw: true, body: lease, headers: { 'x-file-name': encodeURIComponent("lease (Paveen's).md") } });
+  assert.equal(up.status, 202);
+  return ready;
+}
+
+test('serving writes runtime.json with the url and token, and one data folder takes one engine', async (t) => {
+  const { s, root } = await serve(t);
+  const rt = JSON.parse(fs.readFileSync(path.join(root, 'plugin', 'runtime.json'), 'utf8'));
+  assert.deepEqual([rt.url, rt.token, rt.pid], [s.url, s.token, process.pid]);
+  await assert.rejects(startServer({ dataDir: path.join(root, 'data'), port: 0, runtimeFile: path.join(root, 'x.json'), signals: false, log: () => {} }),
+    (e) => e instanceof LockError && /already serving/.test(e.message));
+});
+
+test('requests without the token, from another origin or another host are refused', async (t) => {
+  const { s, call } = await serve(t);
+  assert.equal((await call('/api/state', { token: '' })).status, 401);
+  assert.equal((await call('/api/state', { token: 'x'.repeat(32) })).status, 401);
+  assert.equal((await call('/api/state', { headers: { origin: 'https://evil.example' } })).status, 403);
+  const rebound = await new Promise((resolve) => {
+    http.get({ host: '127.0.0.1', port: s.port, path: '/api/state', headers: { host: `evil.example:${s.port}`, 'x-rag-token': s.token } }, (r) => { r.resume(); resolve(r.statusCode); });
+  });
+  assert.equal(rebound, 421);
+  const ok = await call('/api/state');
+  assert.equal(ok.status, 200);
+  assert.equal(ok.headers.get('access-control-allow-origin'), ORIGIN);
+});
+
+test("only ter-manager's origin passes the preflight", async (t) => {
+  const { s } = await serve(t);
+  const pre = (origin) => fetch(s.url + '/api/ask', { method: 'OPTIONS', headers: { origin, 'access-control-request-method': 'POST', 'access-control-request-headers': 'x-rag-token' } });
+  const good = await pre(ORIGIN);
+  assert.equal(good.status, 204);
+  assert.match(good.headers.get('access-control-allow-headers'), /X-Rag-Token/);
+  assert.equal(good.headers.get('access-control-allow-origin'), ORIGIN);
+  assert.equal((await pre('http://localhost:5173')).status, 403);
+});
+
+test('an upload keeps its name, is queued and ingested, and progress streams as it goes', async (t) => {
+  const { call } = await serve(t);
+  const progress = waitFor(call, (e) => e.type === 'ingest' && e.phase === 'ready');
+  const doc = await withDoc(call);
+  assert.equal(doc.doc.name, "lease (Paveen's).md");
+  assert.equal((await progress).name, "lease (Paveen's).md");
+  const { docs } = await (await call('/api/docs')).json();
+  assert.equal(docs[0].status, 'ready');
+  assert.equal(docs[0].source_path, null, 'an upload has no source path');
+});
+
+test('a file can be added by its path, and a relative path is refused', async (t) => {
+  const { root, call } = await serve(t);
+  const f = path.join(root, 'notes.txt');
+  fs.writeFileSync(f, 'Invoice INV-2024-0042 was paid by transfer.');
+  const ready = waitFor(call, (e) => e.type === 'doc');
+  assert.equal((await call('/api/docs/path', { method: 'POST', body: { path: f } })).status, 202);
+  assert.equal((await ready).doc.name, 'notes.txt');
+  assert.equal((await call('/api/docs/path', { method: 'POST', body: { path: 'notes.txt' } })).status, 400);
+  const { passages } = await (await call('/api/search', { method: 'POST', body: { q: 'INV-2024-0042' } })).json();
+  assert.equal(passages[0].docName, 'notes.txt');
+});
+
+test('ask streams the sources first, then the answer, then the checked citations', async (t) => {
+  const { call } = await serve(t);
+  await withDoc(call);
+  const res = await call('/api/ask', { method: 'POST', body: { question: 'When is rent due?', agent: 'claude' } });
+  assert.match(res.headers.get('content-type'), /ndjson/);
+  const events = await lines(res);
+  assert.equal(events[0].type, 'sources');
+  assert.equal(events[0].sources[0].n, 1);
+  assert.ok(events[0].sources[0].fresh);
+  assert.ok(events.slice(1, -1).every((e) => e.type === 'delta'));
+  const done = events[events.length - 1];
+  assert.equal(done.type, 'done');
+  assert.equal(events.slice(1, -1).map((e) => e.text).join(''), done.answer);
+  assert.deepEqual(done.cited, [1]);
+});
+
+test('an agy follow-up over HTTP is answered by the process that answered the first question', async (t) => {
+  const { call, s } = await serve(t);
+  await withDoc(call);
+  const first = (await lines(await call('/api/ask', { method: 'POST', body: { question: 'When is rent due?', agent: 'agy' } }))).pop();
+  const second = (await lines(await call('/api/ask', { method: 'POST', body: { question: 'Any late fee?', agent: 'agy', conversationId: first.conversationId } }))).pop();
+  const [a, b] = [JSON.parse(first.answer), JSON.parse(second.answer)];
+  assert.equal(a.pid, b.pid);
+  assert.equal(b.turn, 2);
+  assert.equal(s.pool.list()[0].conversationId, first.conversationId);
+});
+
+test('a warm spare is started on request and answers the next new conversation', async (t) => {
+  const { call, s } = await serve(t);
+  await withDoc(call);
+  const w = await (await call('/api/agents/warm', { method: 'POST' })).json();
+  assert.equal(w.warming, true);
+  const sparePid = s.pool.list()[0].pid;
+  const done = (await lines(await call('/api/ask', { method: 'POST', body: { question: 'Rent?', agent: 'agy' } }))).pop();
+  assert.equal(JSON.parse(done.answer).pid, sparePid);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(s.pool.list().filter((p) => p.spare).length, 1, 'a new spare was started after the old one was taken');
+});
+
+test('a second question to a conversation still answering is refused with 409', async (t) => {
+  const { call } = await serve(t, { agy: 'slow' });
+  await withDoc(call);
+  const first = (await lines(await call('/api/ask', { method: 'POST', body: { question: 'Rent?', agent: 'agy' } }))).pop();
+  const running = call('/api/ask', { method: 'POST', body: { question: 'Fees?', agent: 'agy', conversationId: first.conversationId } });
+  await new Promise((r) => setTimeout(r, 350));
+  const again = await call('/api/ask', { method: 'POST', body: { question: 'More?', agent: 'agy', conversationId: first.conversationId } });
+  assert.equal(again.status, 409);
+  await (await running).text();
+});
+
+test('closing the request mid-answer ends the agent', async (t) => {
+  const { call, s } = await serve(t, { agy: 'hang' });
+  await withDoc(call);
+  const ac = new AbortController();
+  const req = call('/api/ask', { method: 'POST', body: { question: 'Rent?', agent: 'agy' }, signal: ac.signal });
+  await new Promise((r) => setTimeout(r, 600));
+  const live = s.pool.list().map((x) => x.pid);
+  assert.equal(live.length, 1, 'the answering session is held by the pool before it has a conversation');
+  ac.abort();
+  await req.catch(() => {});
+  await new Promise((r) => setTimeout(r, 800));
+  assert.equal(s.pool.list().length, 0);
+  for (const p of live) assert.equal(alive(p), false, `agent ${p} still running`);
+});
+
+test('stopping ends answers in flight and open agents, and removes runtime.json and the lock', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-stop-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const { s, call } = await serve(t, { agy: 'hang', dir: root });
+  await withDoc(call);
+  const asking = call('/api/ask', { method: 'POST', body: { question: 'Rent?', agent: 'agy' } }).then(lines);
+  await new Promise((r) => setTimeout(r, 600));
+  const pids = s.pool.list().map((x) => x.pid);
+  assert.equal(pids.length, 1);
+  assert.equal((await call('/api/shutdown', { method: 'POST' })).status, 202);
+  const events = await asking;
+  assert.equal(events.pop().code, 'cancelled');
+  await s.stop();
+  assert.ok(!fs.existsSync(path.join(root, 'plugin', 'runtime.json')));
+  assert.ok(!fs.existsSync(path.join(root, 'data', 'engine.lock')));
+  for (const p of pids) assert.equal(alive(p), false);
+  // The folder can be served again.
+  const again = await serve(t, { dir: root });
+  await again.s.stop();
+});
+
+test('agents a hard-killed engine left running are ended on the next start, if still the same program', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-orphan-'));
+  fs.mkdirSync(path.join(root, 'data'), { recursive: true });
+  const orphan = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  fs.writeFileSync(path.join(root, 'data', 'agents.json'), JSON.stringify({ [orphan.pid]: path.basename(process.execPath).toLowerCase(), 99999991: 'agy.exe' }));
+  t.after(() => { try { orphan.kill(); } catch (_) {} fs.rmSync(root, { recursive: true, force: true }); });
+  const { s } = await serve(t, { dir: root });
+  assert.deepEqual(s.orphans.map((o) => o.pid), [orphan.pid]);
+  await new Promise((r) => setTimeout(r, 500));
+  assert.equal(alive(orphan.pid), false);
+  await s.stop();
+});
+
+test('state reports Ollama, the agents, the settings and the pool', async (t) => {
+  const { call } = await serve(t);
+  const st = await (await call('/api/state')).json();
+  assert.equal(st.ollama.state, 'up');
+  assert.equal(st.settings.claudeModel, 'sonnet');
+  assert.ok('claude' in st.agents && 'agy' in st.agents);
+  assert.deepEqual(st.pool, []);
+  const put = await (await call('/api/settings', { method: 'PUT', body: { agent: 'agy', claudeModel: 'haiku' } })).json();
+  assert.deepEqual([put.settings.agent, put.settings.claudeModel], ['agy', 'haiku']);
+  assert.equal((await call('/api/settings', { method: 'PUT', body: { agent: 'gpt' } })).status, 400);
+});
+
+test('a cited passage comes with the text around it, and a removed document is gone', async (t) => {
+  const { call } = await serve(t);
+  const { doc } = await withDoc(call);
+  const { passages } = await (await call('/api/search', { method: 'POST', body: { q: 'late fee' } })).json();
+  const view = await (await call(`/api/chunks/${passages[0].chunkIds[0]}`)).json();
+  assert.equal(view.docName, "lease (Paveen's).md");
+  assert.ok(view.chunk.text.length > 0);
+  assert.equal((await call(`/api/docs/${doc.id}`, { method: 'DELETE' })).status, 200);
+  assert.equal((await call(`/api/chunks/${passages[0].chunkIds[0]}`)).status, 404);
+});

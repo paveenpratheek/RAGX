@@ -26,7 +26,7 @@ export class EngineError extends Error {
   constructor(code, message) {
     super(message);
     this.name = 'EngineError';
-    this.code = code; // needs-reembed | not-found
+    this.code = code; // needs-reembed | not-found | stopped
   }
 }
 
@@ -54,6 +54,7 @@ export class Engine {
     this.makeEmbedder = makeEmbedder;
     this.embedder = makeEmbedder(readSettings(this.store));
     this.index = null;
+    this.stopRequested = false; // set by a server stopping; ingest ends at its next step
   }
 
   close() { this.store.close(); }
@@ -65,15 +66,18 @@ export class Engine {
   /* Adds one file. A file already indexed (same bytes, any name) is not added
    * twice; one an earlier run left half-done is finished. Never throws for a
    * bad document - the result says what happened to it. */
-  async ingest(filePath, { onProgress = () => {} } = {}) {
+  /* name and sourcePath default to the file's own; an upload passes the name
+   * it was sent under and no source path, since its file is a temporary. */
+  async ingest(filePath, { onProgress = () => {}, name = null, sourcePath } = {}) {
     const abs = path.resolve(filePath);
-    const ext = path.extname(abs).toLowerCase();
+    const shown = name || path.basename(abs);
+    const ext = path.extname(shown).toLowerCase();
     if (!SUPPORTED.includes(ext)) {
-      return { status: 'error', name: path.basename(abs), error: `${ext || 'This file type'} is not supported - use ${SUPPORTED.join(', ')}.` };
+      return { status: 'error', name: shown, error: `${ext || 'This file type'} is not supported - use ${SUPPORTED.join(', ')}.` };
     }
     let buf;
     try { buf = fs.readFileSync(abs); } catch (e) {
-      return { status: 'error', name: path.basename(abs), error: `Cannot read ${abs}: ${e.code || e.message}` };
+      return { status: 'error', name: shown, error: `Cannot read ${abs}: ${e.code || e.message}` };
     }
     const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
     const known = this.store.docBySha(sha256);
@@ -84,7 +88,7 @@ export class Engine {
     else {
       const copy = path.join(this.dir, 'files', sha256 + ext);
       if (!fs.existsSync(copy)) fs.writeFileSync(copy, buf);
-      id = this.store.addDoc({ sha256, name: path.basename(abs), ext, sourcePath: abs, bytes: buf.length });
+      id = this.store.addDoc({ sha256, name: shown, ext, sourcePath: sourcePath === undefined ? abs : sourcePath, bytes: buf.length });
     }
     return this.process(id, { onProgress, label: known ? 'resumed' : 'added' });
   }
@@ -116,6 +120,7 @@ export class Engine {
       /* A document that cannot be read is in error for good. Ollama stopped,
        * or the model not pulled, leaves the status as it was, so the next
        * run resumes instead of starting again. */
+      // A stop between steps is not permanent either: the rest resumes.
       const permanent = e instanceof ExtractError || (e instanceof EmbedError && e.code === 'too-long');
       if (permanent) this.store.setStatus(id, STATUS.error, e.message);
       else this.store.setError(id, e.message);
@@ -165,6 +170,7 @@ export class Engine {
     let done = total - todo.length;
     say('embedding', done, total);
     for (let i = 0; i < todo.length; i += STEP) {
+      if (this.stopRequested) throw new EngineError('stopped', 'Stopped; the rest is embedded on the next start.');
       const part = todo.slice(i, i + STEP);
       const vectors = await this.embedder.embedDocuments(part.map((c) => chunkInput(doc.name, c.heading, c.text)));
       this.store.putVectors(part.map((c, j) => ({ id: c.id, vector: vectors[j] })));
@@ -237,6 +243,12 @@ export class Engine {
       out.push(await this.process(doc.id, { onProgress, label: 'reembedded' }));
     }
     return out;
+  }
+
+  /* Read one document again from its copy: extract, chunk, embed. */
+  async reindex(id, { onProgress = () => {} } = {}) {
+    if (!this.store.doc(id)) throw new EngineError('not-found', `No document with id ${id}.`);
+    return this.process(id, { onProgress, label: 'reindexed' });
   }
 
   remove(id) {

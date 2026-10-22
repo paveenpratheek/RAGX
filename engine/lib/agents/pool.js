@@ -48,6 +48,7 @@ export class AgentPool {
     const spare = live.get(SPARE);
     if (key == null && !resume && spare && !spare.busy && (spare.model || null) === (model || null)) {
       live.delete(SPARE);
+      live.set(Symbol('new'), spare);
       return spare;
     }
     if (live.size >= this.max) {
@@ -63,11 +64,23 @@ export class AgentPool {
       await oldest.close();
     }
     const s = this.open({ resume, model });
-    if (key != null) live.set(key, s);
+    /* A new conversation has no id until its first answer is stored; it is
+     * held under a key of its own meanwhile, so it counts toward the limit
+     * and a stop still finds it (t-d43c8cb45c). */
+    live.set(key != null ? key : Symbol('new'), s);
     return s;
   }
 
-  adopt(key, session) { if (session.alive) this.sessions.set(key, session); }
+  keyOf(session) {
+    for (const [k, s] of this.sessions) if (s === session) return k;
+    return undefined;
+  }
+
+  adopt(key, session) {
+    const old = this.keyOf(session);
+    if (old !== undefined) this.sessions.delete(old);
+    if (session.alive) this.sessions.set(key, session);
+  }
 
   /* Start the spare if there is none and there is room for it. Never closes a
    * conversation's session to make room: a spare is worth less than one in
@@ -88,7 +101,8 @@ export class AgentPool {
   /* A session that failed mid-turn may still be writing that turn's output:
    * end it, so it never answers the next question (t-cbaceb1b84). */
   discard(key, session) {
-    if (key != null && this.sessions.get(key) === session) this.sessions.delete(key);
+    const k = this.keyOf(session);
+    if (k !== undefined) this.sessions.delete(k);
     session.kill();
   }
 
@@ -103,7 +117,7 @@ export class AgentPool {
 
   list() {
     return [...this.live().entries()].map(([key, s]) => ({
-      conversationId: key === SPARE ? null : key, spare: key === SPARE, pid: s.pid, busy: s.busy, idleMs: Date.now() - s.lastUsed,
+      conversationId: typeof key === 'symbol' ? null : key, spare: key === SPARE, pid: s.pid, busy: s.busy, idleMs: Date.now() - s.lastUsed,
     }));
   }
 

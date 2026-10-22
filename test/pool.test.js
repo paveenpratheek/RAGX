@@ -101,6 +101,15 @@ test('when room is needed the spare is closed before any conversation', async (t
   assert.equal(a.alive, true, 'the conversation idle longer than the spare stayed open');
 });
 
+test('a new conversation still answering counts toward the limit', async (t) => {
+  const { pool } = makePool(t, 'slow');
+  const a = await pool.session(null);
+  const b = await pool.session(null);
+  const busy = [q(a), q(b)];
+  await assert.rejects(pool.session(null), (e) => e.code === 'pool-full');
+  await Promise.all(busy);
+});
+
 test('a spare is never started by closing a conversation in use', async (t) => {
   const { pool } = makePool(t);
   const a = await pool.session(null); pool.adopt(1, a);
