@@ -1,0 +1,97 @@
+/* The index database: one SQLite file in the data folder.
+ *
+ * Node's own node:sqlite, not a native module (t-3833b289a0): FTS5, bm25 and
+ * BLOB vectors all work in it, and nothing has to be rebuilt when Node moves.
+ */
+import { DatabaseSync } from 'node:sqlite';
+
+export const SCHEMA_VERSION = 1;
+
+const SCHEMA = `
+create table if not exists meta (
+  key   text primary key,
+  value text not null
+);
+
+create table if not exists documents (
+  id            integer primary key,
+  sha256        text not null unique,
+  name          text not null,
+  ext           text not null,
+  source_path   text,
+  bytes         integer not null,
+  status        text not null,
+  error         text,
+  pages         integer,
+  chunks        integer not null default 0,
+  embedded_with text,
+  added_at      text not null,
+  updated_at    text not null
+);
+
+create table if not exists chunks (
+  id        integer primary key,
+  doc_id    integer not null references documents(id) on delete cascade,
+  ord       integer not null,
+  heading   text not null default '',
+  text      text not null,
+  lead      integer not null default 0,
+  page_from integer,
+  page_to   integer,
+  unique (doc_id, ord)
+);
+
+create table if not exists vectors (
+  chunk_id integer primary key references chunks(id) on delete cascade,
+  v        blob not null
+);
+
+create virtual table if not exists chunks_fts using fts5(
+  text, heading,
+  content = 'chunks', content_rowid = 'id',
+  tokenize = 'porter unicode61'
+);
+
+create trigger if not exists chunks_ai after insert on chunks begin
+  insert into chunks_fts (rowid, text, heading) values (new.id, new.text, new.heading);
+end;
+
+create trigger if not exists chunks_ad after delete on chunks begin
+  insert into chunks_fts (chunks_fts, rowid, text, heading) values ('delete', old.id, old.text, old.heading);
+end;
+`;
+
+/* `lead` is how many characters at the start of a chunk repeat the end of the
+ * one before it - the overlap. Search joins neighbouring chunks by dropping
+ * exactly that much, so a passage built from two chunks never reads a
+ * sentence twice.
+ *
+ * The keyword index stems English (t-eaa5b5169e): a question asking about a
+ * "payment" has to find a document that says "Payments". */
+export function openDb(file) {
+  const db = new DatabaseSync(file);
+  db.exec('pragma journal_mode = wal; pragma foreign_keys = on; pragma busy_timeout = 5000;');
+  db.exec(SCHEMA);
+  const row = db.prepare("select value from meta where key = 'schema_version'").get();
+  if (!row) {
+    db.prepare("insert into meta (key, value) values ('schema_version', ?)").run(String(SCHEMA_VERSION));
+  } else if (Number(row.value) > SCHEMA_VERSION) {
+    db.close();
+    throw new Error(`The index at ${file} was written by a newer engine (schema ${row.value}, this one knows ${SCHEMA_VERSION}).`);
+  }
+  return db;
+}
+
+/* node:sqlite has no transaction helper. Every multi-row write goes through
+ * this, so a crash or Ctrl+C between batches leaves whole batches or nothing. */
+export function transaction(db, fn) {
+  db.exec('begin');
+  try {
+    const out = fn();
+    db.exec('commit');
+    return out;
+  } catch (e) {
+    db.exec('rollback');
+    throw e;
+  }
+}

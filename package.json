@@ -1,0 +1,14 @@
+{
+  "name": "project-harness",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A RAG engine for ter-manager: documents in, cited passages out",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test",
+    "rag": "node engine/cli.js"
+  }
+}
