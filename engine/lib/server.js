@@ -257,12 +257,12 @@ export async function startServer({
     }
 
     if (m('GET', /^\/api\/tracker\/summary$/)) {
-      const range = { day: 86400e3, week: 7 * 86400e3, month: 30 * 86400e3, all: Date.now() }[url.searchParams.get('range') || 'day'] || 86400e3;
+      const range = { hour: 3600e3, day: 86400e3, week: 7 * 86400e3, month: 30 * 86400e3, all: Date.now() }[url.searchParams.get('range') || 'day'] || 86400e3;
       return json(200, tracker.summary(range));
     }
     if (m('GET', /^\/api\/tracker\/calls$/)) {
       const sp = url.searchParams;
-      return json(200, { calls: tracker.calls({ limit: sp.get('limit'), before: sp.get('before'), source: sp.get('source'), kind: sp.get('kind') }) });
+      return json(200, { calls: tracker.calls({ limit: sp.get('limit'), before: sp.get('before'), since: sp.get('since'), source: sp.get('source'), kind: sp.get('kind') }) });
     }
     if ((p = m('GET', /^\/api\/tracker\/calls\/(\d+)$/))) {
       const c = tracker.call(Number(p[0]));

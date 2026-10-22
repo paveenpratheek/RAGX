@@ -174,6 +174,50 @@ progress { width: 120px; height: 6px; vertical-align: middle; accent-color: var(
 .form h3 { margin: 6px 0 0; font-size: 14px; }
 .form label { display: grid; grid-template-columns: 170px 1fr; gap: 10px; align-items: center; }
 
+/* tracker */
+.tracker { overflow: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 14px; position: relative; }
+.toolbar { flex-wrap: wrap; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+.stat { background: var(--raise); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; }
+.stat .label { color: var(--muted); font-size: 12px; }
+.stat .value { font-size: 20px; font-weight: 600; line-height: 1.3; font-variant-numeric: tabular-nums; }
+.stat .sub { color: var(--muted); font-size: 12px; }
+.chart-card { background: var(--raise); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.chart { width: 100%; height: 120px; display: block; }
+.chart .grid { stroke: var(--line); stroke-width: 1; }
+.chart .gpu { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.chart .vram { fill: color-mix(in srgb, var(--green) 22%, transparent); stroke: var(--green); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.chart .model { fill: color-mix(in srgb, var(--yellow) 18%, transparent); }
+.legend { font-size: 12px; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-left: 6px; }
+.sw.gpu { background: var(--accent); } .sw.vram { background: var(--green); } .sw.model { background: color-mix(in srgb, var(--yellow) 60%, transparent); }
+.calls tbody tr { cursor: pointer; }
+.calls tbody tr:hover { background: var(--soft); }
+.calls .q { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.who { font-size: 12px; padding: 1px 7px; border-radius: 99px; background: var(--soft); white-space: nowrap; }
+.who.you { background: var(--acc-soft); } .who.agent { background: color-mix(in srgb, var(--green) 20%, transparent); }
+.timebar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--soft); width: 110px; margin-top: 3px; }
+.timebar i { display: block; height: 100%; }
+.timebar .load { background: var(--yellow); } .timebar .embed { background: var(--green); } .timebar .search { background: var(--muted); } .timebar .agent { background: var(--accent); }
+.tracker .source { position: fixed; top: 0; right: 0; bottom: 0; z-index: 15; box-shadow: -8px 0 24px rgb(0 0 0 / .18); width: min(440px, 100%); }
+.detail-body { flex: 1; overflow: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; font-size: 13.5px; }
+.detail-body h4 { margin: 4px 0 0; font-size: 13px; }
+.detail-body .passage { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; }
+.detail-body .passage .where { font-size: 12px; color: var(--muted); margin-bottom: 4px; white-space: normal; }
+.err { color: var(--red); }
+.detail-body .warn { color: var(--yellow); font-size: 12.5px; }
+.detail-body .answer p { margin: 0 0 8px; }
+
+/* notifications */
+.notifications { overflow: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
+.badge { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 99px; background: var(--red); color: #fff; font-size: 11px; line-height: 18px; text-align: center; margin-left: 4px; }
+.notes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.notes li { background: var(--raise); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.notes li.pending { border-color: color-mix(in srgb, var(--yellow) 60%, transparent); }
+.notes .what { flex: 1; min-width: 220px; }
+.notes .what .q { font-style: italic; }
+.state.pending { color: var(--yellow); } .state.answered { color: var(--green); } .state.expired { color: var(--muted); }
+
 .toast {
   position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 30;
   background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 8px; max-width: min(560px, 90vw);

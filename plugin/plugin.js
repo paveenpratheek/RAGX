@@ -19,7 +19,7 @@ const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 
 const S = {
-  up: false, state: null, local: null, dataDir: null, repo: null,
+  up: false, checked: false, state: null, local: null, dataDir: null, repo: null,
   tab: 'ask', agent: 'claude', model: 'sonnet',
   conv: null, convAgent: null, sources: new Map(), asking: null,
   docs: new Map(), progress: new Map(), events: null, startedAt: 0,
@@ -73,9 +73,12 @@ function setStatus(kind, text) {
   $('status').textContent = text;
 }
 
+/* Notifications stay open with the engine stopped - that is when agents'
+ * requests arrive; every other tab needs the engine (t-37579410a9). */
 function showOffline() {
-  $('offline').hidden = false;
-  document.querySelectorAll('[data-panel]').forEach((p) => { p.hidden = true; });
+  const notes = S.tab === 'notifications';
+  $('offline').hidden = notes;
+  document.querySelectorAll('[data-panel]').forEach((p) => { p.hidden = !(notes && p.dataset.panel === 'notifications'); });
   $('ollama').hidden = true;
   $('start-cmd').textContent = startCommand();
   $('data-dir').textContent = S.dataDir || 'not given yet';
@@ -93,7 +96,9 @@ async function refresh() {
   try { st = await engine.state(); } catch (e) { toast(e.message, true); }
   const was = S.up;
   S.up = Boolean(st);
+  S.checked = true;
   S.state = st;
+  if (S.up !== was) renderNotes();
   if (!st) {
     stopEvents();
     renderPool([]); // a stopped engine holds no agents
@@ -139,6 +144,20 @@ function schedule() {
   clearTimeout(schedule.timer);
   const ms = !S.up ? (Date.now() - S.startedAt < 90_000 ? 1500 : 4000) : 20_000;
   schedule.timer = setTimeout(async () => { await refresh(); schedule(); }, ms);
+}
+
+/* The Start button and Approve in Notifications share this one path: the
+ * engine runs in a terminal the user can see and stop (t-c47fb21612). */
+async function startEngine() {
+  if (!S.repo || !S.dataDir) { showTab('ask'); toast('Say where the engine is first, then start it.', true); return; }
+  S.startedAt = Date.now();
+  setStatus('wait', 'Starting the engine…');
+  $('start-msg').textContent = TM && TM.isHosted
+    ? 'Started in a terminal - ter-manager switched to it. Come back here from the sidebar; this page notices when the engine answers.'
+    : 'Open a terminal and run the command above.';
+  if (S.tab === 'notifications') toast('Starting the engine - the waiting agent goes ahead once it answers.');
+  await openTerminal(startCommand(), 'Documents engine');
+  schedule();
 }
 
 /* ---------------------------------------------------------- the events */
@@ -190,6 +209,9 @@ function onEvent(e) {
       break;
     case 'ollama': // the engine finished starting (or finding) Ollama
       refresh();
+      break;
+    case 'call':
+      trackerChanged();
       break;
     default:
       break;
@@ -518,15 +540,312 @@ async function saveSettings(ev) {
   } catch (e) { $('settings-msg').textContent = e.message; }
 }
 
+/* ------------------------------------------------------------- tracker */
+
+const RANGES = { hour: 3600e3, day: 86400e3, week: 7 * 86400e3, month: 30 * 86400e3 };
+const WHO = { you: 'You', agent: 'Agent', cli: 'Command line', other: 'Other' };
+const KIND = { search: 'Search', ask: 'Ask', passage: 'Passage', documents: 'Documents', ingest: 'Ingest', reindex: 'Re-index', reembed: 'Re-embed', resume: 'Resume' };
+
+function fmtMs(ms) {
+  if (ms == null) return '-';
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
+  return `${Math.floor(ms / 60_000)} min ${Math.round((ms % 60_000) / 1000)} s`;
+}
+function fmtWhen(at) {
+  const d = new Date(at);
+  const today = new Date().toDateString() === d.toDateString();
+  return today ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+const agentName = (client) => (client && client.startsWith('mcp:') ? client.slice(4).split(/[/ ]/)[0] : null);
+
+function stat(label, value, sub) {
+  const c = el('div', 'stat');
+  c.append(el('div', 'label', label), el('div', 'value', value));
+  if (sub) c.appendChild(el('div', 'sub', sub));
+  return c;
+}
+
+/* The parts of a call's time, drawn to scale: model loading inside
+ * embedding, then search, then the answering agent. */
+function timebar(c) {
+  const bar = el('div', 'timebar');
+  const total = c.ms || 0;
+  if (!total) return bar;
+  const load = c.load_ms || 0;
+  const parts = [['load', load], ['embed', Math.max((c.embed_ms || 0) - load, 0)], ['search', c.search_ms || 0], ['agent', c.agent_ms || 0]];
+  for (const [cls, ms] of parts) {
+    if (!ms) continue;
+    const i = el('i', cls);
+    i.style.width = `${Math.min(100, (ms / total) * 100)}%`;
+    i.title = `${{ load: 'loading the model', embed: 'embedding', search: 'searching', agent: 'the agent answering' }[cls]}: ${fmtMs(ms)}`;
+    bar.appendChild(i);
+  }
+  return bar;
+}
+
+/* One period for the cards, the chart and the call list, so the list never
+ * disagrees with the totals above it (t-5aa838abc4). */
+const T = { range: 'day', source: '', kind: '', calls: [], more: false, detail: null, timer: null };
+
+async function loadTracker(withCalls = true) {
+  if (!S.up) return;
+  const since = Date.now() - RANGES[T.range];
+  try {
+    const [sum, smp] = await Promise.all([
+      engine.json('GET', `/api/tracker/summary?range=${T.range}`),
+      engine.json('GET', `/api/tracker/samples?range=${T.range}`),
+    ]);
+    renderCards(sum);
+    renderChart(smp.samples, since);
+    if (withCalls) await loadCalls(false);
+  } catch (e) { if (!(e instanceof EngineDown)) toast(e.message, true); }
+}
+
+async function loadCalls(older) {
+  const q = new URLSearchParams({ limit: '50', since: String(Date.now() - RANGES[T.range]) });
+  if (T.source) q.set('source', T.source);
+  if (T.kind) q.set('kind', T.kind);
+  if (older && T.calls.length) q.set('before', String(T.calls[T.calls.length - 1].id));
+  const { calls } = await engine.json('GET', `/api/tracker/calls?${q}`);
+  T.calls = older ? T.calls.concat(calls) : calls;
+  T.more = calls.length === 50;
+  renderCalls();
+}
+
+function renderCards(sum) {
+  const by = sum.bySource || {};
+  const n = (k) => (by[k] ? by[k].calls : 0);
+  const all = Object.values(by);
+  const calls = all.reduce((a, o) => a + o.calls, 0);
+  const avg = calls ? all.reduce((a, o) => a + o.avgMs * o.calls, 0) / calls : 0;
+  const slowest = all.reduce((a, o) => Math.max(a, o.maxMs), 0);
+  const now = sum.now;
+  const split = [['you', 'you'], ['agent', 'agents'], ['cli', 'command line'], ['other', 'other']].filter(([k]) => n(k)).map(([k, w]) => `${n(k)} ${w}`).join(' · ');
+  const loaded = sum.modelLoadedSeconds || 0;
+  $('tr-cards').replaceChildren(
+    stat('Calls', String(calls), split || 'none yet'),
+    stat('Time per call', calls ? fmtMs(avg) : '-', calls ? `slowest ${fmtMs(slowest)}` : null),
+    stat('Embedding', fmtMs(sum.embedMs), sum.loadMs ? `${fmtMs(sum.loadMs)} of it loading the model` : 'model was already loaded'),
+    stat('Model loads', String(sum.loads), `loaded for ${loaded >= 3600 ? (loaded / 3600).toFixed(1) + ' h' : Math.round(loaded / 60) + ' min'}`),
+    stat('GPU now', now && now.gpuUtil != null ? `${now.gpuUtil}%` : '-',
+      now && now.vramUsed != null ? `VRAM ${now.vramUsed} / ${now.vramTotal} MiB` : 'no NVIDIA GPU found'),
+    stat('Embedding model', now ? (now.modelLoaded ? `${now.modelVram} MiB` : 'not loaded') : '-',
+      now && now.ollamaUp === false ? 'Ollama is not answering' : 'VRAM it holds in Ollama'),
+  );
+  for (const [k, label] of Object.entries(WHO)) {
+    const o = by[k];
+    if (!o) continue;
+    $('tr-cards').appendChild(stat(label, `${o.calls} ${o.calls === 1 ? 'call' : 'calls'}`, `avg ${fmtMs(o.avgMs)} · slowest ${fmtMs(o.maxMs)}${o.errors ? ` · ${o.errors} failed` : ''}`));
+  }
+}
+
+const SVG = 'http://www.w3.org/2000/svg';
+function svg(tag, attrs) { const e = document.createElementNS(SVG, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e; }
+
+function renderChart(samples, from) {
+  const W = 600, H = 120;
+  const to = Date.now();
+  const x = (at) => ((at - from) / (to - from)) * W;
+  const y = (f) => H - Math.max(0, Math.min(1, f)) * H;
+  // A gap of more than three steps is the engine having been stopped: the line breaks there.
+  const step = T.range === 'hour' ? 5000 : 60_000;
+  const segments = [];
+  let cur = [];
+  for (const s of samples) {
+    if (cur.length && s.at - cur[cur.length - 1].at > step * 3) { segments.push(cur); cur = []; }
+    cur.push(s);
+  }
+  if (cur.length) segments.push(cur);
+  const chart = $('tr-chart');
+  const parts = [25, 50, 75].map((p) => svg('line', { class: 'grid', x1: 0, x2: W, y1: y(p / 100), y2: y(p / 100) }));
+  for (const seg of segments) {
+    for (const s of seg) {
+      if (s.modelLoaded >= 0.5) parts.push(svg('rect', { class: 'model', x: x(s.at), y: 0, width: Math.max(1, (step / (to - from)) * W), height: H }));
+    }
+    const vram = seg.filter((s) => s.vramUsed != null && s.vramTotal);
+    if (vram.length) {
+      const d = `M${x(vram[0].at)},${H} ` + vram.map((s) => `L${x(s.at)},${y(s.vramUsed / s.vramTotal)}`).join(' ') + ` L${x(vram[vram.length - 1].at)},${H} Z`;
+      parts.push(svg('path', { class: 'vram', d }));
+    }
+    const gpu = seg.filter((s) => s.gpuUtil != null);
+    if (gpu.length) parts.push(svg('path', { class: 'gpu', d: gpu.map((s, i) => `${i ? 'L' : 'M'}${x(s.at)},${y(s.gpuUtil / 100)}`).join(' ') }));
+  }
+  chart.replaceChildren(...parts);
+  chart.dataset.from = String(from);
+  chart.samples = samples;
+  $('tr-chart-from').textContent = samples.length ? fmtWhen(from) : 'No samples in this period - they are taken while the engine runs.';
+}
+
+/* Hovering the chart reads out the sample under the pointer. */
+function chartReadout(e) {
+  const chart = $('tr-chart');
+  const samples = chart.samples || [];
+  if (!samples.length) return;
+  const box = chart.getBoundingClientRect();
+  const from = Number(chart.dataset.from);
+  const at = from + ((e.clientX - box.left) / box.width) * (Date.now() - from);
+  let best = samples[0];
+  for (const s of samples) if (Math.abs(s.at - at) < Math.abs(best.at - at)) best = s;
+  $('tr-chart-to').textContent = `${fmtWhen(best.at)} · GPU ${best.gpuUtil == null ? '-' : Math.round(best.gpuUtil) + '%'}`
+    + ` · VRAM ${best.vramUsed == null ? '-' : best.vramUsed + ' MiB'} · model ${best.modelLoaded >= 0.5 ? (best.modelVram || 0) + ' MiB' : 'not loaded'}`;
+}
+
+function renderCalls() {
+  $('tr-calls').replaceChildren(...T.calls.map((c) => {
+    const tr = el('tr');
+    tr.dataset.id = String(c.id);
+    const who = el('td');
+    who.appendChild(el('span', 'who ' + c.source, agentName(c.client) || WHO[c.source] || c.source));
+    const what = el('td', null, KIND[c.kind] || c.kind);
+    if (c.agent) what.appendChild(el('div', 'note', c.model ? `${c.agent} · ${c.model}` : c.agent));
+    const q = el('td', 'q', c.question || '');
+    q.title = c.question || '';
+    const time = el('td', null, fmtMs(c.ms));
+    time.appendChild(timebar(c));
+    const res = el('td', 'num', c.error ? '' : c.results == null ? '' : String(c.results));
+    if (c.error) { res.appendChild(el('span', 'err', 'failed')); res.title = c.error; }
+    tr.append(el('td', null, fmtWhen(c.at)), who, what, q, res, time);
+    return tr;
+  }));
+  $('tr-empty').hidden = T.calls.length > 0;
+  $('tr-more').hidden = !T.more;
+}
+
+function where(p) { return p.pageFrom == null ? '' : p.pageFrom === p.pageTo ? `, p.${p.pageFrom}` : `, pp.${p.pageFrom}-${p.pageTo}`; }
+
+function passageBox(p, label) {
+  const box = el('div', 'passage');
+  box.appendChild(el('div', 'where', `${label || (p.n ? `[${p.n}] ` : '')}${p.docName}${where(p)}${p.heading ? ' - ' + p.heading : ''}${p.score != null ? ` · score ${Number(p.score).toFixed(3)}` : ''}`));
+  box.appendChild(document.createTextNode(p.text));
+  return box;
+}
+
+async function openCall(id) {
+  let c;
+  try { c = await engine.json('GET', `/api/tracker/calls/${id}`); } catch (e) { toast(e.message, true); return; }
+  T.detail = c.id;
+  $('tr-detail').hidden = false;
+  $('tr-detail-title').textContent = `${KIND[c.kind] || c.kind} · ${agentName(c.client) || WHO[c.source] || c.source}`;
+  $('tr-detail-where').textContent = [new Date(c.at).toLocaleString(), c.client].filter(Boolean).join(' · ');
+  const body = [];
+  const h = (t) => body.push(el('h4', null, t));
+  if (c.question) { h(c.kind === 'ask' || c.kind === 'search' ? 'Question' : 'Subject'); body.push(el('div', null, c.question)); }
+  if (c.error) { h('Error'); body.push(el('div', 'err', c.error)); }
+  h('Time');
+  const facts = el('dl', 'facts');
+  const row = (k, v) => { if (v != null && v !== '') facts.append(el('dt', null, k), el('dd', null, v)); };
+  row('Total', fmtMs(c.ms));
+  row('Embedding', c.embed_ms != null ? fmtMs(c.embed_ms) : null);
+  row('Loading the model', c.load_ms ? fmtMs(c.load_ms) : null);
+  row('Search', c.search_ms != null ? fmtMs(c.search_ms) : null);
+  row('Agent', c.agent_ms != null ? fmtMs(c.agent_ms) : null);
+  row('Answered by', c.agent ? [c.agent, c.model].filter(Boolean).join(' · ') : null);
+  row('Results', c.results != null ? String(c.results) : null);
+  body.push(facts, timebar(c));
+  const d = c.detail || {};
+  if (d.answer) {
+    h('Answer');
+    const ans = el('div', 'answer');
+    ans.appendChild(toDom(parse(d.answer), document, { cite: (n) => el('sup', null, `[${n}]`) }));
+    body.push(ans);
+  }
+  if (d.warning) body.push(el('div', 'warn', d.warning));
+  for (const w of d.warnings || []) body.push(el('div', 'warn', w));
+  if (d.passages && d.passages.length) {
+    h(c.kind === 'ask' ? `Passages the agent was shown (${d.passages.length})` : `Passages returned (${d.passages.length})`);
+    for (const p of d.passages) body.push(passageBox(p));
+  }
+  if (d.chunk) {
+    h('Passage returned');
+    if (d.before) body.push(passageBox({ ...d.before, docName: d.docName }, 'before · '));
+    body.push(passageBox({ ...d.chunk, docName: d.docName }));
+    if (d.after) body.push(passageBox({ ...d.after, docName: d.docName }, 'after · '));
+  }
+  if (d.docs) {
+    h('Documents listed');
+    const ul = el('ul');
+    for (const x of d.docs) ul.appendChild(el('li', null, `${x.name} (${x.status}${x.pages ? `, ${x.pages} pages` : ''}, ${x.chunks} passages)`));
+    body.push(ul);
+  }
+  $('tr-detail-body').replaceChildren(...body);
+}
+
+function closeCall() { $('tr-detail').hidden = true; T.detail = null; }
+
+/* A new call shows within a second or two while the tab is open; several
+ * at once (an agent searching in a burst) load once. */
+function trackerChanged() {
+  if (S.tab !== 'tracker' || !S.up) return;
+  clearTimeout(T.timer);
+  T.timer = setTimeout(() => loadTracker(), 800);
+}
+
+/* ------------------------------------------------------- notifications */
+
+/* An agent's request to start the engine (t-73f0ae28d8). The Harness tool
+ * writes them to notifications.json in the plugin folder, which ter-manager
+ * serves whether or not the engine runs, so they are read even while it is
+ * stopped. A tool that was killed while waiting leaves its request pending;
+ * past the tool's wait it is shown as expired (t-22785c1ed6). */
+const NOTE_WAIT_MS = 180_000;
+const N = { items: [], seen: new Set(), first: true };
+
+function noteState(n) {
+  if (n.status === 'pending' && Date.now() - n.at > NOTE_WAIT_MS + 15_000) return 'expired';
+  return n.status;
+}
+
+async function loadNotes() {
+  N.items = await engine.notifications();
+  const pending = N.items.filter((n) => noteState(n) === 'pending');
+  const badge = $('note-badge');
+  badge.hidden = !pending.length;
+  badge.textContent = String(pending.length);
+  for (const n of pending) {
+    if (N.seen.has(n.id)) continue;
+    N.seen.add(n.id);
+    if (!N.first) toast(`${n.client || 'An agent'} wants to use Harness - see Notifications.`);
+  }
+  N.first = false;
+  renderNotes();
+}
+
+function renderNotes() {
+  const list = $('note-list');
+  list.replaceChildren(...N.items.map((n) => {
+    const state = noteState(n);
+    const li = el('li', state);
+    const what = el('div', 'what');
+    what.appendChild(el('strong', null, `${n.client || 'An agent'}${n.clientVersion ? ' ' + n.clientVersion : ''}`));
+    what.appendChild(document.createTextNode(` called ${n.tool}`));
+    if (n.query) { what.appendChild(document.createTextNode(': ')); what.appendChild(el('span', 'q', `"${n.query}"`)); }
+    if (n.cwd) what.appendChild(el('div', 'note', `working in ${n.cwd}`));
+    what.appendChild(el('div', 'note', fmtWhen(n.at)));
+    li.appendChild(what);
+    li.appendChild(el('span', 'state ' + state, state === 'pending' ? 'waiting for you' : state === 'answered' ? 'engine started - answered' : 'expired'));
+    if (state === 'pending') {
+      const b = el('button', 'primary', S.up ? 'Engine is running' : 'Approve - start the engine');
+      b.dataset.act = 'approve';
+      b.disabled = S.up;
+      li.appendChild(b);
+    }
+    return li;
+  }));
+  $('note-empty').hidden = N.items.length > 0;
+}
+
 /* ------------------------------------------------------------- the tabs */
 
 function showTab(tab) {
   S.tab = tab;
   remember('tab', tab);
   document.querySelectorAll('.tabs button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
-  if (!S.up) return;
+  if (!S.up) { if (S.checked) showOffline(); return; }
   document.querySelectorAll('[data-panel]').forEach((p) => { p.hidden = p.dataset.panel !== tab; });
   if (tab === 'ask') $('question').focus();
+  if (tab === 'tracker') loadTracker();
 }
 
 /* ----------------------------------------------------------- wiring up */
@@ -559,15 +878,7 @@ function wire() {
     setTimeout(() => refresh().then(schedule), 1500);
   });
 
-  $('start-btn').addEventListener('click', async () => {
-    S.startedAt = Date.now();
-    setStatus('wait', 'Starting the engine…');
-    $('start-msg').textContent = TM && TM.isHosted
-      ? 'Started in a terminal - ter-manager switched to it. Come back here from the sidebar; this page notices when the engine answers.'
-      : 'Open a terminal and run the command above.';
-    await openTerminal(startCommand(), 'Documents engine');
-    schedule();
-  });
+  $('start-btn').addEventListener('click', startEngine);
   $('repo-form').addEventListener('submit', (e) => {
     e.preventDefault();
     const v = $('repo').value.trim();
@@ -637,6 +948,23 @@ function wire() {
   $('source-close').addEventListener('click', closeSource);
   $('source-more').addEventListener('click', moreContext);
 
+  // Tracker
+  for (const [id, key] of [['tr-range', 'range'], ['tr-source', 'source'], ['tr-kind', 'kind']]) {
+    $(id).addEventListener('change', (e) => { T[key] = e.target.value; remember('tr-' + key, T[key]); closeCall(); loadTracker(); });
+  }
+  $('tr-more').addEventListener('click', () => loadCalls(true).catch((e) => toast(e.message, true)));
+  $('tr-calls').addEventListener('click', (e) => { const tr = e.target.closest('tr[data-id]'); if (tr) openCall(Number(tr.dataset.id)); });
+  $('tr-detail-close').addEventListener('click', closeCall);
+  $('tr-chart').addEventListener('mousemove', chartReadout);
+  $('tr-chart').addEventListener('mouseleave', () => { $('tr-chart-to').textContent = 'now'; });
+  $('tr-clear').addEventListener('click', async () => {
+    if (!confirm('Clear every recorded call? GPU samples are kept; they age out by themselves after 30 days.')) return;
+    try { await engine.json('DELETE', '/api/tracker/calls'); closeCall(); loadTracker(); toast('Call history cleared.'); } catch (e) { toast(e.message, true); }
+  });
+
+  // Notifications
+  $('note-list').addEventListener('click', (e) => { if (e.target.closest('button[data-act="approve"]')) startEngine(); });
+
   // Settings
   $('settings-form').addEventListener('input', (e) => { e.currentTarget.dataset.dirty = '1'; });
   $('settings-form').addEventListener('submit', saveSettings);
@@ -651,6 +979,7 @@ async function boot() {
   S.tab = await recall('tab', 'ask');
   S.agent = await recall('agent', 'claude');
   S.model = await recall('model', 'sonnet');
+  for (const key of ['range', 'source', 'kind']) { T[key] = await recall('tr-' + key, T[key]); $('tr-' + key).value = T[key]; }
   S.local = await engine.local();
   S.repo = (S.local && S.local.repo) || await recall('repo', null);
   try { S.dataDir = (await hostCall('host.dataDir')).dir; } catch (e) {
@@ -665,6 +994,10 @@ async function boot() {
     if (conv) openConversation(conv);
   }
   schedule();
+  loadNotes();
+  setInterval(loadNotes, 3000);
+  // The GPU cards and chart move on their own while the tab is open.
+  setInterval(() => { if (S.tab === 'tracker' && S.up && !document.hidden) loadTracker(false); }, 10_000);
 }
 
 boot();

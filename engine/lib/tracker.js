@@ -107,10 +107,11 @@ export class Tracker {
   }
 
   /* Newest first; the list leaves out the bulky detail. */
-  calls({ limit = 50, before = null, source = null, kind = null } = {}) {
+  calls({ limit = 50, before = null, since = null, source = null, kind = null } = {}) {
     const where = [];
     const args = [];
     if (before) { where.push('id < ?'); args.push(Number(before)); }
+    if (since) { where.push('at >= ?'); args.push(Number(since)); }
     if (source) { where.push('source = ?'); args.push(source); }
     if (kind) { where.push('kind = ?'); args.push(kind); }
     const sql = `select id, at, ms, source, client, kind, question, agent, model, embed_ms, load_ms, search_ms, agent_ms, results, error

@@ -92,3 +92,15 @@ test('clearing the history removes calls but not the resource samples', async (t
   assert.equal(tracker.calls().length, 0);
   assert.equal(tracker.samples().length, 1);
 });
+
+test('the call list follows the chosen period, and pages back by id within it', (t) => {
+  const { tracker, advance, now } = setup(t);
+  tracker.record({ source: 'you', kind: 'search', ms: 100 });
+  advance(2 * 3600e3);
+  const cut = now() - 3600e3;
+  const a = tracker.record({ source: 'agent', kind: 'search', ms: 200 });
+  const b = tracker.record({ source: 'agent', kind: 'passage', ms: 0 });
+  assert.deepEqual(tracker.calls({ since: cut }).map((c) => c.id), [b.id, a.id], 'the call two hours ago is outside the last hour');
+  assert.deepEqual(tracker.calls({ since: cut, before: b.id }).map((c) => c.id), [a.id]);
+  assert.equal(tracker.calls().length, 3);
+});

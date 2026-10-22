@@ -64,6 +64,15 @@ export class Engine {
     return this.rt;
   }
 
+  /* Requests the Harness tool posted while the engine was stopped - read
+   * from the plugin folder, so they show with no engine running. */
+  async notifications() {
+    try {
+      const r = await fetch(`${this.base}/notifications.json`, { cache: 'no-store' });
+      return r.ok ? (await r.json()).items || [] : [];
+    } catch (_) { return []; }
+  }
+
   async local() {
     try {
       const r = await fetch(`${this.base}/local.json`, { cache: 'no-store' });
@@ -78,7 +87,8 @@ export class Engine {
     try {
       res = await fetch(this.rt.url + path, {
         method,
-        headers: { 'x-rag-token': this.rt.token, ...(body !== undefined && !raw ? { 'content-type': 'application/json' } : {}), ...headers },
+        // 'plugin' files these calls as the user's in the tracker.
+        headers: { 'x-rag-token': this.rt.token, 'x-rag-client': 'plugin', ...(body !== undefined && !raw ? { 'content-type': 'application/json' } : {}), ...headers },
         body: body === undefined ? undefined : raw ? body : JSON.stringify(body),
         signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0],
         cache: 'no-store',

@@ -19,6 +19,8 @@
     <button role="tab" data-tab="ask">Ask</button>
     <button role="tab" data-tab="library">Library</button>
     <button role="tab" data-tab="settings">Settings</button>
+    <button role="tab" data-tab="tracker">Tracker</button>
+    <button role="tab" data-tab="notifications">Notifications <span class="badge" id="note-badge" hidden></span></button>
   </nav>
   <div class="agent">
     <div class="seg" id="agent-seg" role="radiogroup" aria-label="Agent">
@@ -133,6 +135,62 @@
       </div>
     </form>
     <dl class="facts" id="engine-facts"></dl>
+  </section>
+
+  <section class="panel tracker" data-panel="tracker" hidden>
+    <div class="row toolbar">
+      <select id="tr-range" aria-label="Period">
+        <option value="hour">Last hour</option>
+        <option value="day" selected>Last 24 hours</option>
+        <option value="week">Last 7 days</option>
+        <option value="month">Last 30 days</option>
+      </select>
+      <select id="tr-source" aria-label="Who">
+        <option value="">Everyone</option>
+        <option value="you">You</option>
+        <option value="agent">Agents</option>
+        <option value="cli">Command line</option>
+        <option value="other">Other</option>
+      </select>
+      <select id="tr-kind" aria-label="What">
+        <option value="">Every kind</option>
+        <option value="search">Search</option>
+        <option value="ask">Ask</option>
+        <option value="passage">Passage</option>
+        <option value="documents">Documents</option>
+        <option value="ingest">Ingest</option>
+        <option value="reindex">Re-index</option>
+        <option value="reembed">Re-embed</option>
+      </select>
+      <span class="grow"></span>
+      <button id="tr-clear" class="danger">Clear history</button>
+    </div>
+    <div class="cards" id="tr-cards"></div>
+    <div class="chart-card">
+      <div class="row"><strong>GPU and memory</strong><span class="grow"></span>
+        <span class="legend"><i class="sw gpu"></i>GPU use <i class="sw vram"></i>VRAM used <i class="sw model"></i>model loaded</span></div>
+      <svg id="tr-chart" class="chart" viewBox="0 0 600 120" preserveAspectRatio="none" role="img" aria-label="GPU use and VRAM over time"></svg>
+      <div class="row note"><span id="tr-chart-from"></span><span class="grow"></span><span id="tr-chart-to">now</span></div>
+    </div>
+    <table class="docs calls">
+      <thead><tr><th>When</th><th>Who</th><th>What</th><th>Question</th><th class="num">Results</th><th>Time</th></tr></thead>
+      <tbody id="tr-calls"></tbody>
+    </table>
+    <p class="note" id="tr-empty" hidden>No calls in this period.</p>
+    <button id="tr-more" class="wide" hidden>Show older calls</button>
+    <aside id="tr-detail" class="source" hidden>
+      <header>
+        <div><strong id="tr-detail-title"></strong><div class="note" id="tr-detail-where"></div></div>
+        <button id="tr-detail-close" class="icon" title="Close">×</button>
+      </header>
+      <div id="tr-detail-body" class="detail-body"></div>
+    </aside>
+  </section>
+
+  <section class="panel notifications" data-panel="notifications" hidden>
+    <p class="note">When an agent calls Harness while the engine is stopped, it waits here for you. Approve starts the engine; the agent then gets its answer. Unanswered requests expire after 3 minutes.</p>
+    <ul id="note-list" class="notes"></ul>
+    <p class="note" id="note-empty">No requests.</p>
   </section>
 </main>
 
