@@ -5,7 +5,8 @@
  * Behaviours: answer, echo (answers with what it was given: flags, cwd,
  * which API keys it can see, the prompt), replay (the real output recorded
  * in phase 0), crash, hang, login, deny-once, deny-always, error-with-answer,
- * cite-unknown (cites a source number that was never given).
+ * cite-unknown (cites a source number that was never given), slow (answers
+ * after 0.8 s, to catch a second question arriving mid-answer).
  * npm test spends no subscription because of this (t-fbffe96c78). It is not
  * named *.test.js, so the test runner does not start it (t-8b630a28cc).
  */
@@ -17,11 +18,26 @@ const [protocol, behaviour, ...flags] = process.argv.slice(2);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const out = (e) => process.stdout.write(JSON.stringify(e) + '\n');
 
-let stdin = '';
+/* Like the real CLIs, each stdin line is a turn answered as it arrives, and
+ * the process ends when stdin closes - so a session can hold it open for
+ * several turns (t-65d057e543). */
+let buf = '';
+let turnNo = 0;
+let hanging = null;
 process.stdin.setEncoding('utf8');
-process.stdin.on('data', (s) => { stdin += s; });
-process.stdin.on('end', () => {
-  const msg = JSON.parse(stdin.trim().split('\n')[0]);
+process.stdin.on('data', (s) => {
+  buf += s;
+  let nl;
+  while ((nl = buf.indexOf('\n')) >= 0) {
+    const line = buf.slice(0, nl).trim();
+    buf = buf.slice(nl + 1);
+    if (line) turn(JSON.parse(line));
+  }
+});
+process.stdin.on('end', () => { if (!hanging) process.exit(0); });
+
+function turn(msg) {
+  turnNo++;
   const prompt = protocol === 'claude' ? msg.message.content[0].text : msg.message.content;
   const keys = ['ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY'].filter((k) => k in process.env);
   const flag = (name) => { const i = flags.indexOf(name); return i >= 0 ? flags[i + 1] : null; };
@@ -31,12 +47,15 @@ process.stdin.on('end', () => {
     return;
   }
   if (behaviour === 'crash') { process.stderr.write('boom: something broke\n'); process.exit(3); }
-  if (behaviour === 'hang') { setInterval(() => {}, 1000); return; }
+  if (behaviour === 'hang') { hanging = setInterval(() => {}, 1000); return; }
 
   let answer = 'The vault code is 7741 [1].';
-  if (behaviour === 'echo') answer = JSON.stringify({ flags, cwd: process.cwd(), keys, prompt });
+  if (behaviour === 'echo') answer = JSON.stringify({ flags, cwd: process.cwd(), keys, prompt, pid: process.pid, turn: turnNo });
   if (behaviour === 'cite-unknown') answer = 'Rent is due monthly [1], and late fees apply [9].';
+  if (behaviour === 'slow') { setTimeout(() => answerWith(answer), 800); return; }
+  answerWith(answer);
 
+  function answerWith(answer) {
   if (protocol === 'claude') {
     const session = flag('--resume') || 'sess-1';
     out({ type: 'system', subtype: 'init', session_id: session, tools: [], mcp_servers: [], apiKeySource: 'none', model: flag('--model') || 'default' });
@@ -52,7 +71,7 @@ process.stdin.on('end', () => {
 
   // agy
   const conversation = flag('--conversation') || 'conv-1';
-  out({ event: 'init', conversation_id: conversation, init: { cwd: process.cwd(), tools: ['view_file'] } });
+  if (turnNo === 1) out({ event: 'init', conversation_id: conversation, init: { cwd: process.cwd(), tools: ['view_file'] } });
   out({ event: 'step_update', step_update: { step_index: 0, state: 'DONE', step_type: 'user_input' } });
   if (behaviour === 'login') {
     out({ event: 'result', result: { conversation_id: conversation, status: 'ERROR', response: '', error: { message: 'You are not signed in' } } });
@@ -67,4 +86,5 @@ process.stdin.on('end', () => {
   out({ event: 'step_update', step_update: { step_index: 1, state: 'ACTIVE', step_type: 'agent_response', text_delta: answer } });
   const status = behaviour === 'error-with-answer' ? 'ERROR' : 'SUCCESS';
   out({ event: 'result', result: { conversation_id: conversation, status, response: answer, error: status === 'ERROR' ? { message: '503 No capacity' } : null } });
-});
+  }
+}

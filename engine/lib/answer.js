@@ -74,8 +74,12 @@ function choose(engine, conv, { agent, model }) {
   return { name, adapter, model: chosenModel || null, executable };
 }
 
+/* pool: the server's open agy sessions (t-53c25eef6e); without one, as from
+ * the command line, every question starts its own process. onSources fires
+ * once the sources are known, before the agent starts - so the plugin can
+ * show what is being read during agy's wait. */
 export async function ask(engine, { question, agent = null, model = null, conversationId = null, k = 8,
-  onDelta = () => {}, signal, agentOptions = {} }) {
+  onDelta = () => {}, onSources = () => {}, signal, agentOptions = {}, pool = null }) {
   const store = engine.store;
   const conv = conversationId ? store.conversation(conversationId) : null;
   if (conversationId && !conv) throw new AskError('not-found', `No conversation ${conversationId}.`);
@@ -110,10 +114,24 @@ export async function ask(engine, { question, agent = null, model = null, conver
   }
 
   const prompt = buildPrompt({ question, fresh, earlier: earlier.length ? next - 1 - fresh.length : 0 });
-  const result = await who.adapter.ask({
-    prompt, system: RULES, model: who.model, resume: conv ? conv.session : null,
-    cwd: agentFolder(engine.dir), executable: who.executable, onDelta, signal, ...agentOptions,
-  });
+  onSources({ sources: shown, fresh: fresh.map((s) => s.n) });
+
+  let result;
+  let session = null;
+  if (pool && who.name === 'agy') {
+    session = await pool.session(conv ? conv.id : null, { resume: conv ? conv.session : null, model: who.model });
+    try {
+      result = await session.ask({ prompt, system: RULES, onDelta, signal, ...agentOptions });
+    } catch (e) {
+      pool.discard(conv ? conv.id : null, session);
+      throw e;
+    }
+  } else {
+    result = await who.adapter.ask({
+      prompt, system: RULES, model: who.model, resume: conv ? conv.session : null,
+      cwd: agentFolder(engine.dir), executable: who.executable, onDelta, signal, ...agentOptions,
+    });
+  }
 
   const all = new Map([...earlier, ...fresh].map((s) => [s.n, s]));
   const nums = citations(result.text);
@@ -122,6 +140,7 @@ export async function ask(engine, { question, agent = null, model = null, conver
 
   const id = conv ? conv.id : store.addConversation({ agent: who.name, model: who.model, title: question.slice(0, 120) });
   store.setSession(id, result.session, who.model);
+  if (session && !conv) pool.adopt(id, session);
   store.addSources(id, fresh);
   store.addMessage(id, { role: 'user', text: question });
   store.addMessage(id, { role: 'assistant', text: result.text, cited, unknown });

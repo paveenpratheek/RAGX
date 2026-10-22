@@ -68,59 +68,97 @@ export function agentFolder(dataDir) {
   }
 }
 
-function killTree(child) {
-  if (!child.pid || child.exitCode !== null) return;
-  if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
-  else child.kill('SIGTERM');
+export function killTree(pid) {
+  if (!pid) return;
+  if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+  else { try { process.kill(pid, 'SIGTERM'); } catch (_) { /* already gone */ } }
 }
 
-/* Starts the agent, writes input to its stdin and closes it, and hands each
- * JSON line of stdout to onEvent. Resolves with the exit code and the tail
- * of stderr; rejects only on time-out, cancel or a failure to start. */
-export function runAgent({ executable, args, input, cwd, timeoutMs, onEvent, signal }) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (fn, value) => { if (settled) return; settled = true; clearTimeout(timer); fn(value); };
-    const child = spawn(executable, args, { cwd, env: cleanEnv(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, shell: false });
+/* Every agent process started, so the engine can write them down and, after
+ * a hard kill of its own, end the ones left behind on its next start. */
+let tracker = { add() {}, remove() {} };
+export function setTracker(t) { tracker = t; }
 
+/* A running agent: write lines to its stdin, get each JSON line of its stdout
+ * as an event. `closed` resolves with the exit code and the tail of stderr,
+ * whatever ends it; `failed` is set if it could not start at all. One-shot
+ * runs are this with stdin closed after one write (t-1fe9772761). */
+export function startAgent({ executable, args, cwd, onEvent }) {
+  const child = spawn(executable, args, { cwd, env: cleanEnv(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, shell: false });
+  const agent = {
+    child,
+    pid: child.pid,
+    exited: false,
+    failed: null,
+    write(line) { if (!agent.exited) child.stdin.write(line); },
+    end() { if (!agent.exited) child.stdin.end(); },
+    kill() { if (!agent.exited) killTree(child.pid); },
+  };
+  if (child.pid) tracker.add(child.pid, executable);
+
+  let buf = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (s) => {
+    buf += s;
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let event;
+      try { event = JSON.parse(line); } catch (_) { continue; }
+      onEvent(event);
+    }
+  });
+  let stderr = '';
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (s) => { stderr = (stderr + s).slice(-4000); });
+  child.stdin.on('error', () => { /* the agent exited before reading - its exit says why */ });
+
+  agent.closed = new Promise((resolve) => {
+    child.on('error', (e) => { agent.failed = new AgentError('not-found', `Could not start ${executable}: ${e.message}`); });
+    child.on('close', (code) => {
+      agent.exited = true;
+      if (child.pid) tracker.remove(child.pid);
+      resolve({ code, stderr: stderr.trim() });
+    });
+  });
+  return agent;
+}
+
+/* Waits for something an agent will do, or ends it: after timeoutMs, on
+ * cancel, or when it exits first. A time-out or cancel ends the whole
+ * process tree (t-bb20babed3). */
+export function awaitAgent(agent, promise, { timeoutMs, signal }) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = (fn, v) => { if (done) return; done = true; clearTimeout(timer); if (signal) signal.removeEventListener('abort', onAbort); fn(v); };
     const timer = setTimeout(() => {
-      killTree(child);
+      agent.kill();
       finish(reject, new AgentError('timeout', `The agent did not finish within ${Math.round(timeoutMs / 1000)} s.`));
     }, timeoutMs);
-    const onAbort = () => {
-      killTree(child);
-      finish(reject, new AgentError('cancelled', 'Cancelled.'));
-    };
+    const onAbort = () => { agent.kill(); finish(reject, new AgentError('cancelled', 'Cancelled.')); };
     if (signal) {
       if (signal.aborted) return onAbort();
       signal.addEventListener('abort', onAbort, { once: true });
     }
-
-    let buf = '';
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (s) => {
-      buf += s;
-      let nl;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line) continue;
-        let event;
-        try { event = JSON.parse(line); } catch (_) { continue; }
-        try { onEvent(event); } catch (e) { killTree(child); finish(reject, e); }
-      }
-    });
-    let stderr = '';
-    child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (s) => { stderr = (stderr + s).slice(-4000); });
-
-    child.on('error', (e) => finish(reject, new AgentError('not-found', `Could not start ${executable}: ${e.message}`)));
-    child.on('close', (code) => {
-      if (signal) signal.removeEventListener('abort', onAbort);
-      finish(resolve, { code, stderr: stderr.trim() });
-    });
-
-    child.stdin.on('error', () => { /* the agent exited before reading - its exit says why */ });
-    child.stdin.end(input);
+    promise.then((v) => finish(resolve, v), (e) => finish(reject, e));
   });
+}
+
+/* One turn and done: start, write the input, close stdin, wait for exit.
+ * Resolves with the exit code and the tail of stderr; rejects only on
+ * time-out, cancel or a failure to start. */
+export async function runAgent({ executable, args, input, cwd, timeoutMs, onEvent, signal }) {
+  let thrown = null;
+  const agent = startAgent({ executable, args, cwd, onEvent: (e) => {
+    if (thrown) return;
+    try { onEvent(e); } catch (err) { thrown = err; agent.kill(); }
+  } });
+  agent.write(input);
+  agent.end();
+  const out = await awaitAgent(agent, agent.closed, { timeoutMs, signal });
+  if (agent.failed) throw agent.failed;
+  if (thrown) throw thrown;
+  return out;
 }
