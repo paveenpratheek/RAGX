@@ -10,18 +10,33 @@
 import path from 'node:path';
 import { Engine, EngineError } from './lib/engine.js';
 import { EmbedError } from './lib/embed.js';
+import { ask, label, AskError, AgentError, AGENTS } from './lib/answer.js';
+
+/* config set keys and the meta entries they write. */
+const SETTINGS = {
+  agent: { meta: 'agent', check: (v) => (AGENTS[v] ? null : `agent must be ${Object.keys(AGENTS).join(' or ')}`) },
+  'claude-model': { meta: 'claude_model' },
+  'agy-model': { meta: 'agy_model' },
+  'claude-path': { meta: 'claude_path' },
+  'agy-path': { meta: 'agy_path' },
+};
 
 const USAGE = `usage: node engine/cli.js --data-dir <folder> <command>
 
   ingest <file>...        add documents (one already indexed is skipped)
   resume                  finish documents an interrupted run left half-done
   search <question>       best passages for a question  [--k 8] [--json]
+  ask <question>          a cited answer from Claude or agy
+                          [--agent claude|agy] [--model <name>] [--conversation <id>] [--json]
+  conversations [<id>]    past conversations, or one in full
   list                    every document and its status
   remove <id>             forget a document and its copy
   stats                   counts, model and index size
   config                  show the embedding settings
   config set-model <name> [--query-prefix <text>] [--doc-prefix <text>]
                           use another Ollama embedding model (then: reembed)
+  config set <key> <value>  agent (claude|agy), claude-model, agy-model,
+                          claude-path, agy-path
   reembed                 rebuild every vector with the current model`;
 
 function parse(argv) {
@@ -114,6 +129,52 @@ async function main(argv) {
         });
         return 0;
       }
+      case 'ask': {
+        const question = rest.join(' ').trim();
+        if (!question) throw new UsageError('ask needs a question.');
+        const ac = new AbortController();
+        const stop = () => ac.abort();
+        process.once('SIGINT', stop);
+        let r;
+        try {
+          r = await ask(engine, {
+            question, agent: opts.agent || null, model: opts.model || null,
+            conversationId: opts.conversation ? Number(opts.conversation) : null,
+            k: Number(opts.k) || 8, signal: ac.signal,
+            onDelta: opts.json ? () => {} : (d) => process.stdout.write(d),
+          });
+        } finally { process.off('SIGINT', stop); }
+        if (opts.json) { console.log(JSON.stringify(r, null, 2)); return 0; }
+        if (!r.asked) console.log(r.answer);
+        console.log('');
+        for (const w of r.warnings) console.log(`! ${w}`);
+        if (r.unknown.length) console.log(`! The answer cites ${r.unknown.map((n) => `[${n}]`).join(' ')}, which no source has that number - treat it with care.`);
+        if (r.cited.length) {
+          console.log('\nSources:');
+          for (const s of r.cited) console.log('  ' + label(s));
+        } else if (r.asked) console.log('\n(The answer cites no source.)');
+        if (r.conversationId) console.log(`\n${r.agent}${r.model ? ' ' + r.model : ''} · conversation ${r.conversationId} - follow up with --conversation ${r.conversationId}`);
+        return 0;
+      }
+      case 'conversations': {
+        if (rest[0]) {
+          const id = Number(rest[0]);
+          const c = engine.store.conversation(id);
+          if (!c) throw new UsageError(`No conversation ${rest[0]}.`);
+          console.log(`Conversation ${c.id} with ${c.agent}${c.model ? ' ' + c.model : ''}, session ${c.session || '-'}\n`);
+          const sources = new Map(engine.store.sources(id).map((s) => [s.n, s]));
+          for (const m of engine.store.messages(id)) {
+            console.log(m.role === 'user' ? `> ${m.text}` : m.text);
+            if (m.role === 'assistant' && m.cited.length) console.log(m.cited.map((n) => '  ' + label(sources.get(n))).join('\n'));
+            console.log('');
+          }
+          return 0;
+        }
+        const all = engine.store.conversations();
+        if (!all.length) console.log('No conversations yet.');
+        for (const c of all) console.log(`${String(c.id).padStart(4)}  ${c.agent.padEnd(6)} ${String(c.questions).padStart(3)} questions  ${c.title}`);
+        return 0;
+      }
       case 'list': {
         const docs = engine.list();
         if (!docs.length) console.log('No documents yet.');
@@ -144,9 +205,23 @@ async function main(argv) {
           if (r.stale) console.log(`${r.stale} document(s) were embedded another way - run "reembed" before searching.`);
           return 0;
         }
+        if (rest[0] === 'set') {
+          const [, key, ...value] = rest;
+          const def = SETTINGS[key];
+          if (!def) throw new UsageError(`config set takes ${Object.keys(SETTINGS).join(', ')}.`);
+          const v = value.join(' ').trim();
+          const bad = def.check && def.check(v);
+          if (bad) throw new UsageError(bad);
+          engine.store.setMeta(def.meta, v);
+          console.log(v ? `${key} = ${v}` : `${key} cleared`);
+          return 0;
+        }
         if (rest.length) throw new UsageError(`Unknown config command: ${rest[0]}`);
         const s = engine.settings();
-        console.log(`model         ${s.model}\nquery prefix  ${JSON.stringify(s.queryPrefix)}\ndoc prefix    ${JSON.stringify(s.docPrefix)}`);
+        const m = (k, d = '-') => engine.store.getMeta(k, '') || d;
+        console.log(`embedding     ${s.model}\nquery prefix  ${JSON.stringify(s.queryPrefix)}\ndoc prefix    ${JSON.stringify(s.docPrefix)}`);
+        console.log(`agent         ${m('agent', 'claude')}\nclaude model  ${m('claude_model', AGENTS.claude.DEFAULT_MODEL)}\nagy model     ${m('agy_model', "agy's default")}`);
+        console.log(`claude path   ${m('claude_path', 'from PATH')}\nagy path      ${m('agy_path', 'from PATH')}`);
         return 0;
       }
       case 'reembed': {
@@ -165,7 +240,11 @@ async function main(argv) {
 
 main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (e) => {
   if (e instanceof UsageError) { console.error(e.message + '\n\n' + USAGE); process.exitCode = 2; return; }
-  if (e instanceof EngineError || e instanceof EmbedError) { console.error(e.message); process.exitCode = 1; return; }
+  if (e instanceof EngineError || e instanceof EmbedError || e instanceof AskError || e instanceof AgentError) {
+    console.error(e.message);
+    process.exitCode = e.code === 'cancelled' ? 130 : 1;
+    return;
+  }
   console.error(e.stack || e.message);
   process.exitCode = 1;
 });

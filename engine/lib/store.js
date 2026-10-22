@@ -59,6 +59,16 @@ export class Store {
       pending: p(`select * from documents where status in ('queued', 'extracting', 'embedding') order by id`),
       totals: p(`select (select count(*) from documents) docs, (select count(*) from chunks) chunks,
                         (select count(*) from vectors) vectors`),
+      addConversation: p('insert into conversations (agent, model, title, created_at, updated_at) values (?, ?, ?, ?, ?)'),
+      conversation: p('select * from conversations where id = ?'),
+      conversations: p(`select c.*, (select count(*) from messages m where m.conversation_id = c.id and m.role = 'user') questions
+                        from conversations c order by c.updated_at desc`),
+      setSession: p('update conversations set session = ?, model = coalesce(?, model), updated_at = ? where id = ?'),
+      addMessage: p('insert into messages (conversation_id, role, text, cited, unknown, created_at) values (?, ?, ?, ?, ?, ?)'),
+      messages: p('select * from messages where conversation_id = ? order by id'),
+      addSource: p(`insert into sources (conversation_id, n, chunk_ids, doc_id, doc_name, heading, page_from, page_to, text)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+      sources: p('select * from sources where conversation_id = ? order by n'),
     };
   }
 
@@ -137,6 +147,46 @@ export class Store {
    * returns is higher-is-better. */
   keywordSearch(match, limit) {
     return this.q.fts.all(match, limit).map((r) => ({ id: r.id, score: -r.score }));
+  }
+
+  /* A conversation holds its agent's session and its own numbering of
+   * sources, so [3] means the same passage for as long as it runs. A source
+   * keeps its text: the agent was shown it, and a document removed later
+   * must not change what an old answer cited. */
+  addConversation({ agent, model, title }) {
+    const t = now();
+    return Number(this.q.addConversation.run(agent, model ?? null, title, t, t).lastInsertRowid);
+  }
+
+  conversation(id) { return this.q.conversation.get(id) || null; }
+  conversations() { return this.q.conversations.all(); }
+  setSession(id, session, model = null) { this.q.setSession.run(session, model, now(), id); }
+
+  addMessage(conversationId, { role, text, cited = null, unknown = null }) {
+    this.q.addMessage.run(conversationId, role, text,
+      cited ? JSON.stringify(cited) : null, unknown ? JSON.stringify(unknown) : null, now());
+  }
+
+  messages(conversationId) {
+    return this.q.messages.all(conversationId).map((m) => ({
+      ...m, cited: m.cited ? JSON.parse(m.cited) : [], unknown: m.unknown ? JSON.parse(m.unknown) : [],
+    }));
+  }
+
+  addSources(conversationId, sources) {
+    transaction(this.db, () => {
+      for (const s of sources) {
+        this.q.addSource.run(conversationId, s.n, JSON.stringify(s.chunkIds), s.docId ?? null, s.docName,
+          s.heading || '', s.pageFrom ?? null, s.pageTo ?? null, s.text);
+      }
+    });
+  }
+
+  sources(conversationId) {
+    return this.q.sources.all(conversationId).map((s) => ({
+      n: s.n, chunkIds: JSON.parse(s.chunk_ids), docId: s.doc_id, docName: s.doc_name,
+      heading: s.heading, pageFrom: s.page_from, pageTo: s.page_to, text: s.text,
+    }));
   }
 
   staleDocs(embeddedWith) { return this.q.stale.all(embeddedWith); }

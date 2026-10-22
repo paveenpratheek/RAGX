@@ -5,7 +5,7 @@
  */
 import { DatabaseSync } from 'node:sqlite';
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 const SCHEMA = `
 create table if not exists meta (
@@ -59,6 +59,39 @@ end;
 create trigger if not exists chunks_ad after delete on chunks begin
   insert into chunks_fts (chunks_fts, rowid, text, heading) values ('delete', old.id, old.text, old.heading);
 end;
+
+create table if not exists conversations (
+  id         integer primary key,
+  agent      text not null,
+  model      text,
+  session    text,
+  title      text not null,
+  created_at text not null,
+  updated_at text not null
+);
+
+create table if not exists messages (
+  id              integer primary key,
+  conversation_id integer not null references conversations(id) on delete cascade,
+  role            text not null,
+  text            text not null,
+  cited           text,
+  unknown         text,
+  created_at      text not null
+);
+
+create table if not exists sources (
+  conversation_id integer not null references conversations(id) on delete cascade,
+  n               integer not null,
+  chunk_ids       text not null,
+  doc_id          integer,
+  doc_name        text not null,
+  heading         text not null default '',
+  page_from       integer,
+  page_to         integer,
+  text            text not null,
+  primary key (conversation_id, n)
+);
 `;
 
 /* `lead` is how many characters at the start of a chunk repeat the end of the
@@ -73,12 +106,15 @@ export function openDb(file) {
   db.exec('pragma journal_mode = wal; pragma foreign_keys = on; pragma busy_timeout = 5000;');
   db.exec(SCHEMA);
   const row = db.prepare("select value from meta where key = 'schema_version'").get();
-  if (!row) {
-    db.prepare("insert into meta (key, value) values ('schema_version', ?)").run(String(SCHEMA_VERSION));
-  } else if (Number(row.value) > SCHEMA_VERSION) {
+  if (row && Number(row.value) > SCHEMA_VERSION) {
     db.close();
     throw new Error(`The index at ${file} was written by a newer engine (schema ${row.value}, this one knows ${SCHEMA_VERSION}).`);
   }
+  /* Every change so far only adds tables, which the schema above creates
+   * when missing - so an older index is brought up to date by opening it
+   * (t-a8652db0cd). */
+  db.prepare("insert into meta (key, value) values ('schema_version', ?) on conflict (key) do update set value = excluded.value")
+    .run(String(SCHEMA_VERSION));
   return db;
 }
 

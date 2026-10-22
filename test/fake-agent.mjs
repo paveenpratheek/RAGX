@@ -4,7 +4,8 @@
  *
  * Behaviours: answer, echo (answers with what it was given: flags, cwd,
  * which API keys it can see, the prompt), replay (the real output recorded
- * in phase 0), crash, hang, login, deny-once, deny-always, error-with-answer.
+ * in phase 0), crash, hang, login, deny-once, deny-always, error-with-answer,
+ * cite-unknown (cites a source number that was never given).
  * npm test spends no subscription because of this (t-fbffe96c78). It is not
  * named *.test.js, so the test runner does not start it (t-8b630a28cc).
  */
@@ -34,6 +35,7 @@ process.stdin.on('end', () => {
 
   let answer = 'The vault code is 7741 [1].';
   if (behaviour === 'echo') answer = JSON.stringify({ flags, cwd: process.cwd(), keys, prompt });
+  if (behaviour === 'cite-unknown') answer = 'Rent is due monthly [1], and late fees apply [9].';
 
   if (protocol === 'claude') {
     const session = flag('--resume') || 'sess-1';
