@@ -308,6 +308,21 @@ test('every call is tracked with who made it, and the tracker API reports it', a
   assert.equal((await (await call('/api/tracker/calls')).json()).calls.length, 0);
 });
 
+test('the event stream carries an ask live: announced at its start, through its phases, then its record', async (t) => {
+  const { call } = await serve(t);
+  await (await withDoc(call));
+  const seen = [];
+  const done = waitFor(call, (e) => { if (e.type && e.type.startsWith('call')) seen.push(e); return e.type === 'call' && e.call.kind === 'ask'; });
+  await done.connected;
+  await (await call('/api/ask', { method: 'POST', body: { question: 'When is rent due?', agent: 'claude' }, headers: { 'x-rag-client': 'plugin' } })).text();
+  const end = await done;
+  const asks = seen.filter((e) => e.run === end.run);
+  assert.deepEqual(asks.map((e) => e.type === 'call-phase' ? e.phase : e.type), ['call-start', 'agent answering', 'call']);
+  assert.equal(asks[0].question, 'When is rent due?');
+  assert.equal(asks[0].source, 'you');
+  assert.equal(end.call.detail, undefined);
+});
+
 test('state reports Ollama, the agents, the settings and the pool', async (t) => {
   const { call } = await serve(t);
   const st = await (await call('/api/state')).json();

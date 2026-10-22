@@ -11,6 +11,11 @@
  * model is loaded and how much VRAM it holds. Samples are kept at that
  * detail for 24 hours and as per-minute averages for 30 days
  * (t-cdaac97481, t-61e101305a). Calls are kept until the user clears them.
+ *
+ * The plugin page watches it live: a call is announced when it begins and
+ * as it moves through its phases, each sample as it is taken, and calls the
+ * command line wrote to the same database are picked up on the next sample
+ * (t-106a75470d, t-78f21d2d47, t-14ba4ed74a, t-76b5a48950).
  */
 import { execFile } from 'node:child_process';
 import { transaction } from './db.js';
@@ -58,6 +63,9 @@ export class Tracker {
     this.timer = null;
     this.last = null;
     this.listeners = new Set();
+    this.live = new Set();
+    this.running = new Map(); // run -> the call in progress
+    this.runs = 0;
     const p = (sql) => this.db.prepare(sql);
     this.q = {
       add: p(`insert into calls (at, ms, source, client, kind, question, agent, model, embed_ms, load_ms, search_ms, agent_ms, results, detail, error)
@@ -84,20 +92,68 @@ export class Tracker {
                      sum(case when error is not null then 1 else 0 end) errors
                    from calls where at >= ? group by source, kind`),
       clear: p('delete from calls'),
+      maxId: p('select coalesce(max(id), 0) id from calls'),
+      newer: p(`select id, at, ms, source, client, kind, question, agent, model, embed_ms, load_ms, search_ms, agent_ms, results, error
+                from calls where id > ? order by id limit 50`),
     };
+    this.lastId = this.q.maxId.get().id;
+  }
+
+  /* Everything the page shows live: call-start, call-phase, call,
+   * call-drop and sample events. */
+  onLive(fn) { this.live.add(fn); return () => this.live.delete(fn); }
+
+  emit(event) { for (const fn of this.live) { try { fn(event); } catch (_) { /* a listener's problem */ } } }
+
+  /* A call that takes long enough to watch - an ask, an ingest, a search
+   * waiting on the model - is shown from its start; record({ run }) ends it.
+   * Passage and documents answer in a millisecond and are not announced
+   * (t-78f21d2d47, t-68cc7d3392). */
+  begin({ source, client = null, kind, question = null, agent = null, model = null, phase = null }) {
+    const run = ++this.runs;
+    const r = { run, at: this.now(), source, client, kind, question, agent, model, phase };
+    this.running.set(run, r);
+    this.emit({ type: 'call-start', ...r });
+    return run;
+  }
+
+  phase(run, phase) {
+    const r = this.running.get(run);
+    if (!r || r.phase === phase) return;
+    r.phase = phase;
+    this.emit({ type: 'call-phase', run, phase });
+  }
+
+  /* A call that ended without a record of its own. */
+  drop(run) {
+    if (this.running.delete(run)) this.emit({ type: 'call-drop', run });
+  }
+
+  inProgress() { return [...this.running.values()]; }
+
+  /* Calls another process wrote - the command line shares the database. */
+  catchUp() {
+    const rows = this.q.newer.all(this.lastId);
+    for (const row of rows) { this.lastId = row.id; this.emit({ type: 'call', call: row }); }
+    return rows.length;
   }
 
   onCall(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
 
   /* One call, as it ended. detail carries what came back: passages, an
    * answer and its citations, a document. */
-  record({ at = this.now(), ms = null, source, client = null, kind, question = null, agent = null, model = null,
-    timings = {}, results = null, detail = null, error = null }) {
+  record({ at = null, ms = null, source, client = null, kind, question = null, agent = null, model = null,
+    timings = {}, results = null, detail = null, error = null, run = null }) {
+    const started = run != null && this.running.get(run);
+    if (at == null) at = started ? started.at : this.now();
+    if (run != null) this.running.delete(run);
     const id = Number(this.q.add.run(at, ms, source, client, kind, question, agent, model,
       timings.embedMs ?? null, timings.loadMs ?? null, timings.searchMs ?? null, timings.agentMs ?? null,
       results, json(detail), error).lastInsertRowid);
     const row = this.call(id);
+    this.lastId = Math.max(this.lastId, id);
     for (const fn of this.listeners) { try { fn(row); } catch (_) { /* a listener's problem */ } }
+    this.emit({ type: 'call', run, call: { ...row, detail: undefined } });
     return row;
   }
 
@@ -134,6 +190,7 @@ export class Tracker {
       this.q.minute.run(Math.floor(at / 60000) * 60000, s.gpuUtil ?? 0, s.gpuUtil, s.vramUsed, s.vramTotal, s.modelLoaded ? 1 : 0, s.modelVram);
     });
     this.last = s;
+    this.emit({ type: 'sample', sample: s });
     return s;
   }
 
@@ -147,6 +204,7 @@ export class Tracker {
     let n = 0;
     const tick = async () => {
       try { await this.sample(); } catch (_) { /* a missed sample is only a gap */ }
+      try { this.catchUp(); } catch (_) { /* tried again on the next tick */ }
       if (++n % 120 === 0) this.prune(); // every ten minutes
     };
     tick();

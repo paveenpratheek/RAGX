@@ -104,3 +104,41 @@ test('the call list follows the chosen period, and pages back by id within it', 
   assert.deepEqual(tracker.calls({ since: cut, before: b.id }).map((c) => c.id), [a.id]);
   assert.equal(tracker.calls().length, 3);
 });
+
+test('a long call is announced when it starts, through its phases, and ends with its record', (t) => {
+  const { tracker, advance } = setup(t);
+  const seen = [];
+  tracker.onLive((e) => seen.push(e));
+  const run = tracker.begin({ source: 'you', client: 'plugin', kind: 'ask', question: 'what rotates?', phase: 'searching' });
+  assert.equal(tracker.inProgress().length, 1);
+  tracker.phase(run, 'agent answering');
+  tracker.phase(run, 'agent answering'); // no repeat
+  advance(4000);
+  const row = tracker.record({ run, source: 'you', client: 'plugin', kind: 'ask', question: 'what rotates?', ms: 4000 });
+  assert.deepEqual(seen.map((e) => e.type), ['call-start', 'call-phase', 'call']);
+  assert.equal(seen[2].run, run);
+  assert.equal(seen[2].call.id, row.id);
+  assert.equal(seen[2].call.detail, undefined, 'the live event leaves the detail out');
+  assert.equal(row.at, seen[0].at, 'a call is dated from when it began');
+  assert.equal(tracker.inProgress().length, 0);
+  const other = tracker.begin({ source: 'engine', kind: 'reembed' });
+  tracker.drop(other);
+  assert.equal(seen.at(-1).type, 'call-drop');
+});
+
+test('calls the command line writes to the same database reach the page on the next tick, once', async (t) => {
+  const { tracker } = setup(t, { gpu: async () => ({ util: 40, usedMb: 600, totalMb: 2048 }) });
+  const seen = [];
+  tracker.onLive((e) => seen.push(e));
+  // The command line is another process with its own Tracker on the same file.
+  const cli = new Tracker({ db: tracker.db });
+  const mine = tracker.record({ source: 'you', kind: 'search', ms: 10 });
+  const theirs = cli.record({ source: 'cli', kind: 'search', question: 'from the terminal', ms: 20 });
+  assert.equal(tracker.catchUp(), 1);
+  assert.equal(tracker.catchUp(), 0);
+  const calls = seen.filter((e) => e.type === 'call').map((e) => e.call.id);
+  assert.deepEqual(calls, [mine.id, theirs.id]);
+  await tracker.sample();
+  assert.equal(seen.at(-1).type, 'sample');
+  assert.equal(seen.at(-1).sample.gpuUtil, 40);
+});

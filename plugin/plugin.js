@@ -211,7 +211,11 @@ function onEvent(e) {
       refresh();
       break;
     case 'call':
-      trackerChanged();
+    case 'call-start':
+    case 'call-phase':
+    case 'call-drop':
+    case 'sample':
+      trackerEvent(e);
       break;
     default:
       break;
@@ -587,19 +591,20 @@ function timebar(c) {
 
 /* One period for the cards, the chart and the call list, so the list never
  * disagrees with the totals above it (t-5aa838abc4). */
-const T = { range: 'day', source: '', kind: '', calls: [], more: false, detail: null, timer: null };
+const T = { range: 'day', source: '', kind: '', calls: [], more: false, detail: null, running: new Map(), sum: null, samples: [], sumTimer: null };
 
-async function loadTracker(withCalls = true) {
+async function loadTracker() {
   if (!S.up) return;
-  const since = Date.now() - RANGES[T.range];
   try {
     const [sum, smp] = await Promise.all([
       engine.json('GET', `/api/tracker/summary?range=${T.range}`),
       engine.json('GET', `/api/tracker/samples?range=${T.range}`),
     ]);
+    T.sum = sum;
+    T.samples = smp.samples;
     renderCards(sum);
-    renderChart(smp.samples, since);
-    if (withCalls) await loadCalls(false);
+    renderChart();
+    await loadCalls(false);
   } catch (e) { if (!(e instanceof EngineDown)) toast(e.message, true); }
 }
 
@@ -608,7 +613,8 @@ async function loadCalls(older) {
   if (T.source) q.set('source', T.source);
   if (T.kind) q.set('kind', T.kind);
   if (older && T.calls.length) q.set('before', String(T.calls[T.calls.length - 1].id));
-  const { calls } = await engine.json('GET', `/api/tracker/calls?${q}`);
+  const { calls, running = [] } = await engine.json('GET', `/api/tracker/calls?${q}`);
+  if (!older) T.running = new Map(running.map((r) => [r.run, r]));
   T.calls = older ? T.calls.concat(calls) : calls;
   T.more = calls.length === 50;
   renderCalls();
@@ -644,9 +650,11 @@ function renderCards(sum) {
 const SVG = 'http://www.w3.org/2000/svg';
 function svg(tag, attrs) { const e = document.createElementNS(SVG, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e; }
 
-function renderChart(samples, from) {
+function renderChart() {
   const W = 600, H = 120;
   const to = Date.now();
+  const from = to - RANGES[T.range];
+  const samples = T.samples;
   const x = (at) => ((at - from) / (to - from)) * W;
   const y = (f) => H - Math.max(0, Math.min(1, f)) * H;
   // A gap of more than three steps is the engine having been stopped: the line breaks there.
@@ -692,8 +700,27 @@ function chartReadout(e) {
     + ` · VRAM ${best.vramUsed == null ? '-' : best.vramUsed + ' MiB'} · model ${best.modelLoaded >= 0.5 ? (best.modelVram || 0) + ' MiB' : 'not loaded'}`;
 }
 
+const shownCall = (c) => (!T.source || c.source === T.source) && (!T.kind || c.kind === T.kind);
+
+/* A call still going: its phase and a clock that counts up each second. */
+function runningRow(r) {
+  const tr = el('tr', 'running');
+  tr.dataset.run = String(r.run);
+  const who = el('td');
+  who.appendChild(el('span', 'who ' + r.source, agentName(r.client) || WHO[r.source] || r.source));
+  const what = el('td', null, KIND[r.kind] || r.kind);
+  if (r.agent) what.appendChild(el('div', 'note', r.model ? `${r.agent} · ${r.model}` : r.agent));
+  const q = el('td', 'q', r.question || '');
+  q.title = r.question || '';
+  const time = el('td');
+  time.append(el('span', 'clock', fmtMs(Date.now() - r.at)), el('div', 'note phase', r.phase || 'working'));
+  tr.append(el('td', null, fmtWhen(r.at)), who, what, q, el('td', 'num', ''), time);
+  return tr;
+}
+
 function renderCalls() {
-  $('tr-calls').replaceChildren(...T.calls.map((c) => {
+  const running = [...T.running.values()].filter(shownCall).sort((a, b) => b.run - a.run).map(runningRow);
+  $('tr-calls').replaceChildren(...running, ...T.calls.map((c) => {
     const tr = el('tr');
     tr.dataset.id = String(c.id);
     const who = el('td');
@@ -709,7 +736,7 @@ function renderCalls() {
     tr.append(el('td', null, fmtWhen(c.at)), who, what, q, res, time);
     return tr;
   }));
-  $('tr-empty').hidden = T.calls.length > 0;
+  $('tr-empty').hidden = T.calls.length > 0 || running.length > 0;
   $('tr-more').hidden = !T.more;
 }
 
@@ -774,12 +801,60 @@ async function openCall(id) {
 
 function closeCall() { $('tr-detail').hidden = true; T.detail = null; }
 
-/* A new call shows within a second or two while the tab is open; several
- * at once (an agent searching in a burst) load once. */
-function trackerChanged() {
-  if (S.tab !== 'tracker' || !S.up) return;
-  clearTimeout(T.timer);
-  T.timer = setTimeout(() => loadTracker(), 800);
+/* The tab is live from the engine's event stream: a call appears when it
+ * starts and moves through its phases, its row fills in when it ends, and
+ * every 5-second sample moves the GPU cards and the chart. Nothing is
+ * fetched again except the totals, once a burst of calls has settled. While
+ * another tab is open the events are let go; opening the tab loads afresh
+ * (t-106a75470d, t-14ba4ed74a). */
+function trackerEvent(e) {
+  if (S.tab !== 'tracker') return;
+  if (e.type === 'call-start') { T.running.set(e.run, e); renderCalls(); }
+  else if (e.type === 'call-phase') {
+    const r = T.running.get(e.run);
+    if (!r) return;
+    r.phase = e.phase;
+    const cell = $('tr-calls').querySelector(`tr[data-run="${e.run}"] .phase`);
+    if (cell) cell.textContent = e.phase;
+  } else if (e.type === 'call-drop') { T.running.delete(e.run); renderCalls(); }
+  else if (e.type === 'call') {
+    if (e.run != null) T.running.delete(e.run);
+    const c = e.call;
+    if (c && shownCall(c) && !T.calls.some((x) => x.id === c.id)) T.calls.unshift(c);
+    renderCalls();
+    clearTimeout(T.sumTimer);
+    T.sumTimer = setTimeout(refreshTotals, 400);
+  } else if (e.type === 'sample') {
+    if (T.sum) { T.sum.now = e.sample; renderCards(T.sum); }
+    const last = T.samples[T.samples.length - 1];
+    if (T.range === 'hour') {
+      T.samples.push(e.sample);
+      const from = Date.now() - RANGES.hour;
+      while (T.samples.length && T.samples[0].at < from) T.samples.shift();
+      renderChart();
+    } else if (!last || Math.floor(e.sample.at / 60_000) > Math.floor(last.at / 60_000)) {
+      // Longer periods are drawn from minute averages: fetched again as each minute closes.
+      engine.json('GET', `/api/tracker/samples?range=${T.range}`).then((r) => { T.samples = r.samples; renderChart(); }).catch(() => {});
+    }
+  }
+}
+
+async function refreshTotals() {
+  try {
+    const sum = await engine.json('GET', `/api/tracker/summary?range=${T.range}`);
+    if (T.sum && T.sum.now && (!sum.now || sum.now.at < T.sum.now.at)) sum.now = T.sum.now;
+    T.sum = sum;
+    renderCards(sum);
+  } catch (_) { /* the next call tries again */ }
+}
+
+/* Running rows' clocks; once a second, only while someone is looking. */
+function tickRunning() {
+  if (S.tab !== 'tracker' || !T.running.size) return;
+  for (const tr of $('tr-calls').querySelectorAll('tr.running')) {
+    const r = T.running.get(Number(tr.dataset.run));
+    if (r) tr.querySelector('.clock').textContent = fmtMs(Date.now() - r.at);
+  }
 }
 
 /* ------------------------------------------------------- notifications */
@@ -996,8 +1071,11 @@ async function boot() {
   schedule();
   loadNotes();
   setInterval(loadNotes, 3000);
-  // The GPU cards and chart move on their own while the tab is open.
-  setInterval(() => { if (S.tab === 'tracker' && S.up && !document.hidden) loadTracker(false); }, 10_000);
+  setInterval(tickRunning, 1000);
+  // Without the event stream (it reconnects on the next status check), the
+  // tab falls back to loading every 5 s rather than going stale (t-87c9473aa5).
+  setInterval(() => { if (S.tab === 'tracker' && S.up && !S.events && !document.hidden) loadTracker(); }, 5000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && S.tab === 'tracker' && S.up) loadTracker(); });
 }
 
 boot();

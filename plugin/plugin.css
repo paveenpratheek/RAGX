@@ -193,6 +193,10 @@ progress { width: 120px; height: 6px; vertical-align: middle; accent-color: var(
 .sw.gpu { background: var(--accent); } .sw.vram { background: var(--green); } .sw.model { background: color-mix(in srgb, var(--yellow) 60%, transparent); }
 .calls tbody tr { cursor: pointer; }
 .calls tbody tr:hover { background: var(--soft); }
+.calls tr.running { cursor: default; background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.calls tr.running .clock { font-variant-numeric: tabular-nums; }
+.calls tr.running .clock::before { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-right: 6px; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
 .calls .q { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .who { font-size: 12px; padding: 1px 7px; border-radius: 99px; background: var(--soft); white-space: nowrap; }
 .who.you { background: var(--acc-soft); } .who.agent { background: color-mix(in srgb, var(--green) 20%, transparent); }

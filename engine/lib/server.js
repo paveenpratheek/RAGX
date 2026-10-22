@@ -141,7 +141,7 @@ export async function startServer({
    * header says - "plugin" for the page, "mcp:<agent>" for the Harness tool -
    * and a request without one is "other" (t-e5c3b9093f). */
   const tracker = new Tracker(engine.store, { model: modelReader(engine.embedder.host, () => engine.embedder.model) });
-  tracker.onCall((row) => emit({ type: 'call', call: row && { ...row, detail: undefined } }));
+  tracker.onLive(emit);
   const whoIs = (req) => {
     const client = String(req.headers['x-rag-client'] || '').slice(0, 300) || null;
     const source = !client ? 'other' : client === 'plugin' ? 'you' : client.startsWith('mcp') ? 'agent' : 'other';
@@ -151,19 +151,23 @@ export async function startServer({
 
   const queue = [];
   let current = null;
-  const onProgress = ({ doc, phase, done, total }) => emit({ type: 'ingest', docId: doc && doc.id, name: doc && doc.name, phase, done, total });
+  const onProgress = ({ doc, phase, done, total }) => {
+    emit({ type: 'ingest', docId: doc && doc.id, name: doc && doc.name, phase, done, total });
+    if (current && current.live) tracker.phase(current.live, phase === 'embedding' && total ? `embedding ${done}/${total}` : phase);
+  };
   const pump = async () => {
     if (current || !queue.length || stopping) return;
     current = queue.shift();
     emit({ type: 'queue', queue: queue.map((j) => j.label), current: current.label });
+    current.live = tracker.begin({ ...current.who, question: current.label, phase: ollamaStart ? 'waiting for Ollama' : 'reading' });
     try {
       if (ollamaStart) await ollamaStart; // the first job after a start waits for Ollama
       const results = [].concat(await current.run());
-      for (const r of results) {
+      for (const [i, r] of results.entries()) {
         emit(r.status === 'error' ? { type: 'ingest-error', name: r.doc ? r.doc.name : r.name, error: r.error } : { type: 'doc', status: r.status, doc: r.doc });
         const t = r.timings || {};
         tracker.record({
-          ms: t.ms ?? null, source: current.who.source, client: current.who.client, kind: current.who.kind,
+          run: i === 0 ? current.live : null, ms: t.ms ?? null, source: current.who.source, client: current.who.client, kind: current.who.kind,
           question: r.doc ? r.doc.name : r.name, timings: t, results: r.doc ? r.doc.chunks : 0,
           detail: { docId: r.doc && r.doc.id, status: r.status, pages: r.doc && r.doc.pages, chunks: r.doc && r.doc.chunks, rechunked: r.rechunked || 0 },
           error: r.status === 'error' ? r.error : null,
@@ -171,8 +175,9 @@ export async function startServer({
       }
     } catch (e) {
       emit({ type: 'ingest-error', name: current.label, error: e.message });
-      tracker.record({ source: current.who.source, client: current.who.client, kind: current.who.kind, question: current.label, error: e.message });
+      tracker.record({ run: current.live, source: current.who.source, client: current.who.client, kind: current.who.kind, question: current.label, error: e.message });
     } finally {
+      tracker.drop(current.live); // a job that produced no result
       if (current.cleanup) current.cleanup();
       current = null;
       emit({ type: 'queue', queue: queue.map((j) => j.label), current: null });
@@ -262,7 +267,7 @@ export async function startServer({
     }
     if (m('GET', /^\/api\/tracker\/calls$/)) {
       const sp = url.searchParams;
-      return json(200, { calls: tracker.calls({ limit: sp.get('limit'), before: sp.get('before'), since: sp.get('since'), source: sp.get('source'), kind: sp.get('kind') }) });
+      return json(200, { running: tracker.inProgress(), calls: tracker.calls({ limit: sp.get('limit'), before: sp.get('before'), since: sp.get('since'), source: sp.get('source'), kind: sp.get('kind') }) });
     }
     if ((p = m('GET', /^\/api\/tracker\/calls\/(\d+)$/))) {
       const c = tracker.call(Number(p[0]));
@@ -321,8 +326,14 @@ export async function startServer({
       const { q, k } = await readJson(req);
       if (!q) throw new HttpError(400, 'no-question', 'Give the search in q.');
       const started = Date.now();
-      const r = await engine.search(String(q), { k: Number(k) || 8 });
-      tracker.record({ ...whoIs(req), kind: 'search', question: String(q), ms: Date.now() - started, timings: r.timings,
+      const who = whoIs(req);
+      const run = tracker.begin({ ...who, kind: 'search', question: String(q), phase: 'searching' });
+      let r;
+      try { r = await engine.search(String(q), { k: Number(k) || 8 }); } catch (e) {
+        tracker.record({ ...who, run, kind: 'search', question: String(q), ms: Date.now() - started, error: e.message });
+        throw e;
+      }
+      tracker.record({ ...who, run, kind: 'search', question: String(q), ms: Date.now() - started, timings: r.timings,
         results: r.passages.length, detail: { passages: r.passages.map(passageDetail), warning: r.warning } });
       return json(200, r);
     }
@@ -343,6 +354,7 @@ export async function startServer({
       const send = (e) => { if (!res.writableEnded) res.write(JSON.stringify(e) + '\n'); };
       const started = Date.now();
       const who = whoIs(req);
+      const run = tracker.begin({ ...who, kind: 'ask', question, agent: body.agent || null, model: body.model || null, phase: 'searching' });
       let shown = [];
       try {
         if (ollamaStart) await ollamaStart; // a question right after a start waits for Ollama
@@ -351,18 +363,18 @@ export async function startServer({
           question, agent: name, model: body.model || null, conversationId, k: Number(body.k) || 8,
           signal: ac.signal, pool, agentOptions: (name && agentOptions[name]) || (!name && agentOptions[engine.store.getMeta('agent', 'claude')]) || {},
           // First, before the agent's wait (t-3569a2ad7e).
-          onSources: ({ sources, fresh }) => { shown = sources; send({ type: 'sources', sources: sources.map((s) => ({ ...s, fresh: fresh.includes(s.n) })) }); },
+          onSources: ({ sources, fresh }) => { shown = sources; tracker.phase(run, 'agent answering'); send({ type: 'sources', sources: sources.map((s) => ({ ...s, fresh: fresh.includes(s.n) })) }); },
           onDelta: (text) => send({ type: 'delta', text }),
         });
         send({ type: 'done', conversationId: r.conversationId, answer: r.answer, cited: r.cited.map((s) => s.n), unknown: r.unknown,
           warnings: r.warnings, agent: r.agent, model: r.model, ms: r.ms ?? null, asked: r.asked });
-        tracker.record({ ...who, kind: 'ask', question, agent: r.agent, model: r.model, ms: Date.now() - started, timings: r.timings,
+        tracker.record({ ...who, run, kind: 'ask', question, agent: r.agent, model: r.model, ms: Date.now() - started, timings: r.timings,
           results: r.sources.length, detail: { conversationId: r.conversationId, passages: r.sources.map(passageDetail), answer: r.answer,
             cited: r.cited.map((s) => s.n), unknown: r.unknown, warnings: r.warnings } });
         if (r.agent === 'agy') { refill(); emit({ type: 'pool', pool: pool.list() }); }
       } catch (e) {
         send({ type: 'error', code: e.code || 'failed', message: e.message, status: statusOf(e) });
-        tracker.record({ ...who, kind: 'ask', question, agent: body.agent || null, model: body.model || null, ms: Date.now() - started,
+        tracker.record({ ...who, run, kind: 'ask', question, agent: body.agent || null, model: body.model || null, ms: Date.now() - started,
           results: shown.length, detail: { conversationId, passages: shown.map(passageDetail) }, error: e.message });
       } finally {
         inflight.delete(ac);
