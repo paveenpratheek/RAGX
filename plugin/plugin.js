@@ -1,4 +1,4 @@
-/* The Documents plugin: the page ter-manager shows for the RAG engine.
+/* The Harness plugin: the page ter-manager shows for the RAG engine.
  *
  * It never reaches into ter-manager: everything it asks of the host goes
  * through plugin-host.js messages - open a terminal, remember a preference,
@@ -156,7 +156,7 @@ async function startEngine() {
     ? 'Started in a terminal - ter-manager switched to it. Come back here from the sidebar; this page notices when the engine answers.'
     : 'Open a terminal and run the command above.';
   if (S.tab === 'notifications') toast('Starting the engine - the waiting agent goes ahead once it answers.');
-  await openTerminal(startCommand(), 'Documents engine');
+  await openTerminal(startCommand(), 'Harness engine');
   schedule();
 }
 

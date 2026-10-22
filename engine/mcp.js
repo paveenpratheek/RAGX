@@ -136,7 +136,7 @@ async function call(name, a = {}) {
   if (name === 'harness_search' && !query) return fail('Give a query.');
   if (!(await ensureEngine(name, query))) {
     return fail(`Harness is not running, and the user did not start it within ${Math.round(WAIT_MS / 60000)} minutes. ` +
-      'Carry on without it, or ask the user to open Documents in ter-manager and approve the request under Notifications.');
+      'Carry on without it, or ask the user to open Harness in ter-manager and approve the request under Notifications.');
   }
   try {
     if (name === 'harness_search') {

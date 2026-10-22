@@ -1,10 +1,10 @@
 {
   "id": "rag",
-  "name": "Documents",
+  "name": "Harness",
   "hostApi": "1",
   "view": "plugin.html",
   "sidebar": {
-    "label": "Documents",
+    "label": "Harness",
     "hint": "Ask your files"
   },
   "needs": ["node"]
