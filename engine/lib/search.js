@@ -42,16 +42,19 @@ export function fuse(lists, k = RRF_K) {
   return [...acc.values()].sort((a, b) => b.score - a.score);
 }
 
-/* Neighbouring chunks of one document that both made the cut become one
+/* Neighbouring chunks of one section that both made the cut become one
  * passage, joined by dropping the overlap the second one repeats (its lead),
- * so the agent never reads the shared sentences twice (t-45a2280d8f). */
+ * so the agent never reads the shared sentences twice (t-45a2280d8f). Chunks
+ * either side of a heading stay apart: each passage keeps one heading path
+ * that is true of all of it (t-dcfef3abdf). */
 function joinNeighbours(chosen) {
   const byDoc = [...chosen].sort((a, b) => a.doc_id - b.doc_id || a.ord - b.ord);
   const passages = [];
   for (const c of byDoc) {
     const last = passages[passages.length - 1];
-    if (last && last.docId === c.doc_id && last.lastOrd === c.ord - 1) {
-      last.text += c.text.slice(c.lead);
+    if (last && last.docId === c.doc_id && last.lastOrd === c.ord - 1 && last.heading === c.heading) {
+      // No overlap (code, table rows): the chunks met at a line break.
+      last.text += c.lead ? c.text.slice(c.lead) : '\n' + c.text;
       last.chunkIds.push(c.id);
       last.lastOrd = c.ord;
       last.pageTo = c.page_to ?? last.pageTo;

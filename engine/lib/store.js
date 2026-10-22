@@ -31,6 +31,11 @@ export class Store {
       setReady: p(`update documents set status = 'ready', error = null, embedded_with = ?, chunks = ?, updated_at = ?
                    where id = ?`),
       setPages: p('update documents set pages = ?, updated_at = ? where id = ?'),
+      setEmbedding: p(`update documents set status = 'embedding', error = null, embedded_with = ?, updated_at = ?
+                       where id = ?`),
+      setError: p('update documents set error = ?, updated_at = ? where id = ?'),
+      docVectors: p('select v.chunk_id id, v.v from vectors v join chunks c on c.id = v.chunk_id where c.doc_id = ?'),
+      docChunkIds: p('select id from chunks where doc_id = ?'),
       removeDoc: p('delete from documents where id = ?'),
       deleteChunks: p('delete from chunks where doc_id = ?'),
       addChunk: p(`insert into chunks (doc_id, ord, heading, text, lead, page_from, page_to)
@@ -77,6 +82,17 @@ export class Store {
 
   setStatus(id, status, error = null) { this.q.setStatus.run(status, error, now(), id); }
   setPages(id, pages) { this.q.setPages.run(pages ?? null, now(), id); }
+
+  /* Embedding starts by recording what it embeds with, so a run cut short
+   * can be resumed only by the same model - another would mix spaces. */
+  setEmbedding(id, embeddedWith) { this.q.setEmbedding.run(embeddedWith, now(), id); }
+
+  /* An error that leaves the status alone: the work can be resumed once its
+   * cause - Ollama stopped, the model not pulled - is put right. */
+  setError(id, error) { this.q.setError.run(error, now(), id); }
+
+  docVectors(docId) { return this.q.docVectors.all(docId).map((r) => ({ id: r.id, vector: fromBlob(r.v) })); }
+  docChunkIds(docId) { return this.q.docChunkIds.all(docId).map((r) => r.id); }
 
   setReady(id, embeddedWith) {
     const { n } = this.q.chunkCount.get(id);

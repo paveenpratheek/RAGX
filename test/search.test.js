@@ -108,8 +108,23 @@ test('hybrid search caps chunks per document and joins neighbours without repeat
   const long = out.filter((p) => p.docName === 'long');
   assert.equal(long.length, 1);
   assert.deepEqual(long[0].chunkIds, ids.slice(0, 3));
-  assert.equal(long[0].text, 'Alpha one. Shared tail. Beta two.Gamma three.');
+  assert.equal(long[0].text, 'Alpha one. Shared tail. Beta two.\nGamma three.');
   assert.ok(out.some((p) => p.docName === 'other'));
+});
+
+test('neighbouring chunks either side of a heading stay separate passages', (t) => {
+  const { store, index } = corpus(t);
+  const id = store.addDoc({ sha256: 'h', name: 'guide', ext: '.md', bytes: 1 });
+  const ids = store.replaceChunks(id, [
+    { text: 'Install it first.', heading: 'Setup' },
+    { text: 'Then run it.', heading: 'Usage' },
+    { text: 'Row two', heading: 'Usage' },
+  ]);
+  store.setReady(id, 'm');
+  ids.forEach((cid) => index.add(cid, [1, 0, 0]));
+  const out = hybridSearch({ store, index, question: 'it', queryVector: [1, 0, 0] });
+  assert.deepEqual(out.map((p) => p.heading).sort(), ['Setup', 'Usage']);
+  assert.equal(out.find((p) => p.heading === 'Usage').text, 'Then run it.\nRow two');
 });
 
 test('normalise leaves a zero vector at zero rather than dividing by it', () => {
