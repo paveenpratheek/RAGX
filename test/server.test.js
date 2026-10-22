@@ -38,32 +38,42 @@ async function serve(t, { claude = 'answer', agy = 'echo', dir = null, poolOptio
 
 const lines = async (res) => (await res.text()).trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
 
-/* Read the event stream until an event matches, or fail after a while. */
-async function waitFor(call, match, ms = 10_000) {
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), ms);
-  const res = await call('/api/events', { signal: ac.signal });
-  const reader = res.body.getReader();
-  const dec = new TextDecoder();
-  let buf = '';
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) throw new Error('event stream ended');
-      buf += dec.decode(value, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const e = JSON.parse(buf.slice(0, nl));
-        buf = buf.slice(nl + 1);
-        if (match(e)) return e;
+/* Read the event stream until an event matches, or fail after a while.
+ * `.connected` settles once the stream's hello has arrived: a test sends its
+ * request after that, or the event it waits for can pass before it listens
+ * (t-acc77f0b6c). */
+function waitFor(call, match, ms = 10_000) {
+  let connectedNow;
+  const connected = new Promise((r) => { connectedNow = r; });
+  const result = (async () => {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), ms);
+    const res = await call('/api/events', { signal: ac.signal });
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error('event stream ended');
+        buf += dec.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const e = JSON.parse(buf.slice(0, nl));
+          buf = buf.slice(nl + 1);
+          if (e.type === 'hello') connectedNow();
+          if (match(e)) return e;
+        }
       }
-    }
-  } finally { clearTimeout(timer); ac.abort(); }
+    } finally { clearTimeout(timer); ac.abort(); connectedNow(); }
+  })();
+  result.connected = connected;
+  return result;
 }
 
 async function withDoc(call) {
   const ready = waitFor(call, (e) => e.type === 'doc');
-  await new Promise((r) => setTimeout(r, 50));
+  await ready.connected;
   const up = await call('/api/docs', { method: 'POST', raw: true, body: lease, headers: { 'x-file-name': encodeURIComponent("lease (Paveen's).md") } });
   assert.equal(up.status, 202);
   return ready;
@@ -104,6 +114,7 @@ test("only ter-manager's origin passes the preflight", async (t) => {
 test('an upload keeps its name, is queued and ingested, and progress streams as it goes', async (t) => {
   const { call } = await serve(t);
   const progress = waitFor(call, (e) => e.type === 'ingest' && e.phase === 'ready');
+  await progress.connected;
   const doc = await withDoc(call);
   assert.equal(doc.doc.name, "lease (Paveen's).md");
   assert.equal((await progress).name, "lease (Paveen's).md");
@@ -112,11 +123,27 @@ test('an upload keeps its name, is queued and ingested, and progress streams as 
   assert.equal(docs[0].source_path, null, 'an upload has no source path');
 });
 
+test('a job joining the queue is announced, and a deleted conversation is gone', async (t) => {
+  const { root, call } = await serve(t);
+  const f = path.join(root, 'notes.txt');
+  fs.writeFileSync(f, 'Invoice INV-2024-0042 was paid by transfer.');
+  const queued = waitFor(call, (e) => e.type === 'queue' && (e.current === 'notes.txt' || (e.queue || []).includes('notes.txt')));
+  const ready = waitFor(call, (e) => e.type === 'doc');
+  await Promise.all([queued.connected, ready.connected]);
+  await call('/api/docs/path', { method: 'POST', body: { path: f } });
+  assert.ok(await queued);
+  await ready;
+  const done = (await lines(await call('/api/ask', { method: 'POST', body: { question: 'Invoice?', agent: 'claude' } }))).pop();
+  assert.equal((await call(`/api/conversations/${done.conversationId}`, { method: 'DELETE' })).status, 200);
+  assert.equal((await call(`/api/conversations/${done.conversationId}`)).status, 404);
+});
+
 test('a file can be added by its path, and a relative path is refused', async (t) => {
   const { root, call } = await serve(t);
   const f = path.join(root, 'notes.txt');
   fs.writeFileSync(f, 'Invoice INV-2024-0042 was paid by transfer.');
   const ready = waitFor(call, (e) => e.type === 'doc');
+  await ready.connected;
   assert.equal((await call('/api/docs/path', { method: 'POST', body: { path: f } })).status, 202);
   assert.equal((await ready).doc.name, 'notes.txt');
   assert.equal((await call('/api/docs/path', { method: 'POST', body: { path: 'notes.txt' } })).status, 400);

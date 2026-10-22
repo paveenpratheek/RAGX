@@ -33,7 +33,7 @@ import { ask, AskError, AGENTS } from './answer.js';
 import { AgentError, agentFolder, findExecutable, setTracker } from './agents/runner.js';
 import { AgySession } from './agents/agy.js';
 import { AgentPool } from './agents/pool.js';
-import { takeLock, agentRecord, endOrphans, writeRuntime } from './lifecycle.js';
+import { takeLock, agentRecord, endOrphans, writeRuntime, writeLocal } from './lifecycle.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const VERSION = JSON.parse(fs.readFileSync(path.join(HERE, '..', '..', 'package.json'), 'utf8')).version;
@@ -150,7 +150,13 @@ export async function startServer({
       pump();
     }
   };
-  const enqueue = (label, run, cleanup) => { queue.push({ label, run, cleanup }); pump(); return queue.length + (current ? 1 : 0); };
+  // Announced on joining, so a job waiting behind another shows (t-770d2af24b).
+  const enqueue = (label, run, cleanup) => {
+    queue.push({ label, run, cleanup });
+    emit({ type: 'queue', queue: queue.map((j) => j.label), current: current ? current.label : null });
+    pump();
+    return queue.length + (current ? 1 : 0);
+  };
 
   let ollama = { at: 0, value: null };
   const ollamaState = async () => {
@@ -302,6 +308,16 @@ export async function startServer({
       return json(200, { conversation: c, messages: engine.store.messages(id), sources: engine.store.sources(id), open: pool.live().has(id) });
     }
 
+    if ((p = m('DELETE', /^\/api\/conversations\/(\d+)$/))) {
+      const id = Number(p[0]);
+      if (!engine.store.conversation(id)) throw new HttpError(404, 'not-found', `No conversation ${id}.`);
+      const open = pool.live().get(id);
+      if (open) { if (open.busy) throw new HttpError(409, 'busy', 'This conversation is still answering.'); pool.sessions.delete(id); await open.close(); }
+      engine.store.deleteConversation(id);
+      emit({ type: 'pool', pool: pool.list() });
+      return json(200, { removed: id });
+    }
+
     if (m('GET', /^\/api\/settings$/)) return json(200, settings());
 
     if (m('PUT', /^\/api\/settings$/)) {
@@ -388,6 +404,7 @@ export async function startServer({
   actualPort = server.address().port;
   const url = `http://127.0.0.1:${actualPort}`;
   const removeRuntime = writeRuntime(runtimeFile, { url, port: actualPort, token, pid: process.pid, dataDir: dir, version: VERSION, startedAt: new Date().toISOString() });
+  writeLocal(path.join(path.dirname(runtimeFile), 'local.json'));
   takeLock(dir, { url, startedAt: new Date().toISOString() }, instance);
 
   /* Documents an earlier run left half-done are finished first. */

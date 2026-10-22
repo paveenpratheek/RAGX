@@ -69,6 +69,7 @@ export class Store {
       addSource: p(`insert into sources (conversation_id, n, chunk_ids, doc_id, doc_name, heading, page_from, page_to, text)
                     values (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
       sources: p('select * from sources where conversation_id = ? order by n'),
+      deleteConversation: p('delete from conversations where id = ?'),
     };
   }
 
@@ -159,6 +160,8 @@ export class Store {
   }
 
   conversation(id) { return this.q.conversation.get(id) || null; }
+  /* Its messages and sources go with it. */
+  deleteConversation(id) { this.q.deleteConversation.run(id); }
   conversations() { return this.q.conversations.all(); }
   setSession(id, session, model = null) { this.q.setSession.run(session, model, now(), id); }
 

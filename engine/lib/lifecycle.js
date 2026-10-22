@@ -10,6 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { killTree } from './agents/runner.js';
 
 export function alive(pid) {
@@ -83,6 +84,22 @@ export function endOrphans(dataDir) {
   }
   fs.rmSync(file, { force: true });
   return ended;
+}
+
+/* plugin/local.json: where this copy of the engine lives on disk. A page
+ * served at /plugins/rag/ cannot learn its own folder, and the plugin needs
+ * it to start the engine; asking ter-manager's own /api/plugins would reach
+ * past the host's message contract (t-91c800f187). Written by plugin-setup
+ * and on every serve, so a moved repository corrects itself the next time it
+ * runs. */
+// fileURLToPath, not URL.pathname, which keeps %20 for spaces (t-d9c830f1ad).
+export const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+export function writeLocal(file) {
+  const info = { repo: REPO, cli: path.join(REPO, 'engine', 'cli.js'), node: process.execPath, writtenAt: new Date().toISOString() };
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(info, null, 2));
+  return info;
 }
 
 export function writeRuntime(file, info) {

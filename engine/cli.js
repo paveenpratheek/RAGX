@@ -12,7 +12,7 @@ import { Engine, EngineError } from './lib/engine.js';
 import { EmbedError } from './lib/embed.js';
 import { ask, label, AskError, AgentError, AGENTS } from './lib/answer.js';
 import { startServer } from './lib/server.js';
-import { LockError } from './lib/lifecycle.js';
+import { LockError, writeLocal, REPO } from './lib/lifecycle.js';
 
 /* config set keys and the meta entries they write. */
 const SETTINGS = {
@@ -24,6 +24,7 @@ const SETTINGS = {
 };
 
 const USAGE = `usage: node engine/cli.js --data-dir <folder> <command>
+       node engine/cli.js plugin-setup     (once: tells the plugin where the engine is)
 
   ingest <file>...        add documents (one already indexed is skipped)
   resume                  finish documents an interrupted run left half-done
@@ -96,6 +97,13 @@ async function main(argv) {
   const { opts, args } = parse(argv);
   const [command, ...rest] = args;
   if (opts.help || !command) { console.log(USAGE); return command ? 0 : 2; }
+
+  if (command === 'plugin-setup') {
+    const info = writeLocal(path.join(REPO, 'plugin', 'local.json'));
+    console.log(`Wrote plugin/local.json: the plugin will start ${info.cli} with ${info.node}.`);
+    console.log(`Install the plugin in ter-manager by pointing it at ${path.join(REPO, 'plugin')}.`);
+    return 0;
+  }
   if (!opts['data-dir']) throw new UsageError('Give the folder the index lives in: --data-dir <folder>');
 
   /* The server owns its engine for as long as it runs, so it starts before
