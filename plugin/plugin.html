@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Documents</title>
+<link rel="stylesheet" href="plugin.css">
+<script src="/plugin-host.js"></script>
+<script type="module" src="plugin.js"></script>
+</head>
+<body>
+<header class="bar">
+  <div class="brand">
+    <span class="dot" id="dot" aria-hidden="true"></span>
+    <strong>Documents</strong>
+    <span class="status" id="status">Looking for the engine…</span>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="ask">Ask</button>
+    <button role="tab" data-tab="library">Library</button>
+    <button role="tab" data-tab="settings">Settings</button>
+  </nav>
+  <div class="agent">
+    <div class="seg" id="agent-seg" role="radiogroup" aria-label="Agent">
+      <button role="radio" data-agent="claude">Claude</button>
+      <button role="radio" data-agent="agy">Antigravity</button>
+    </div>
+    <select id="model" aria-label="Model"></select>
+    <span class="chip" id="warm" hidden></span>
+    <div class="menu">
+      <button id="menu-btn" class="icon" aria-haspopup="true" aria-expanded="false" title="More">⋯</button>
+      <div id="menu" class="popover" hidden>
+        <button id="refresh-btn">Check the engine again</button>
+        <button id="stop-btn" class="danger">Stop engine</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section id="offline" class="center" hidden>
+    <div class="card">
+      <h2>The engine is not running</h2>
+      <p>It runs in a ter-manager terminal, where you can watch it work and stop it with Ctrl+C. Closing this view leaves it running.</p>
+      <dl class="facts">
+        <dt>Command</dt><dd><code id="start-cmd">…</code></dd>
+        <dt>Data</dt><dd><code id="data-dir">…</code></dd>
+      </dl>
+      <form id="repo-form" class="row" hidden>
+        <input id="repo" placeholder="Folder of the engine, e.g. E:\Coding CLI\Project Harness" spellcheck="false">
+        <button type="submit">Use this folder</button>
+      </form>
+      <div class="row end">
+        <span class="note" id="start-msg"></span>
+        <button id="start-btn" class="primary">Start engine</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="ollama" class="notice" hidden>
+    <span id="ollama-msg"></span>
+    <span class="grow"></span>
+    <button id="ollama-start" hidden>Start Ollama</button>
+    <button id="ollama-pull" hidden>Download the model</button>
+  </section>
+
+  <section class="panel ask" data-panel="ask" hidden>
+    <aside class="convs">
+      <button id="new-conv" class="wide">New conversation</button>
+      <ul id="conv-list" class="list"></ul>
+    </aside>
+    <div class="chat">
+      <div id="thread" class="thread" aria-live="polite">
+        <div class="empty" id="thread-empty">
+          <h2>Ask your documents</h2>
+          <p>Answers come only from the files in your library, each statement cited. Click a citation to read the passage.</p>
+        </div>
+      </div>
+      <form id="ask-form" class="composer">
+        <textarea id="question" rows="2" placeholder="Ask a question…  (Enter to send, Shift+Enter for a new line)"></textarea>
+        <div class="row">
+          <span class="note" id="ask-note"></span>
+          <span class="grow"></span>
+          <button type="button" id="cancel" hidden>Cancel</button>
+          <button type="submit" id="send" class="primary">Ask</button>
+        </div>
+      </form>
+    </div>
+    <aside id="source" class="source" hidden>
+      <header>
+        <div><strong id="source-title"></strong><div class="note" id="source-where"></div></div>
+        <button id="source-close" class="icon" title="Close">×</button>
+      </header>
+      <div id="source-body" class="source-body"></div>
+      <button id="source-more" class="wide">Show the text around it</button>
+    </aside>
+  </section>
+
+  <section class="panel library" data-panel="library" hidden>
+    <div id="drop" class="drop">
+      <strong>Drop PDF, Word, Markdown or text files here</strong>
+      <span>or <button id="pick" class="link">choose files</button> - they are copied into the engine's data folder</span>
+      <input type="file" id="files" multiple accept=".pdf,.docx,.md,.markdown,.txt,.text" hidden>
+    </div>
+    <form id="path-form" class="row">
+      <input id="path" placeholder="…or the full path of a file on this machine, e.g. E:\Docs\report.pdf" spellcheck="false">
+      <button type="submit">Add</button>
+    </form>
+    <div class="note" id="queue"></div>
+    <table class="docs">
+      <thead><tr><th>Document</th><th>Status</th><th class="num">Chunks</th><th class="num">Pages</th><th></th></tr></thead>
+      <tbody id="doc-list"></tbody>
+    </table>
+    <p class="note" id="docs-empty" hidden>No documents yet.</p>
+  </section>
+
+  <section class="panel settings" data-panel="settings" hidden>
+    <form id="settings-form" class="form">
+      <h3>Answers</h3>
+      <label>Claude model <select name="claudeModel"><option>sonnet</option><option>haiku</option><option>opus</option></select></label>
+      <label>Antigravity model <input name="agyModel" placeholder="agy's own default" spellcheck="false"></label>
+      <label>Claude program <input name="claudePath" placeholder="found on PATH" spellcheck="false"></label>
+      <label>Antigravity program <input name="agyPath" placeholder="found on PATH" spellcheck="false"></label>
+      <h3>Embeddings</h3>
+      <label>Ollama model <input name="embedModel" spellcheck="false"></label>
+      <label>Query prefix <input name="queryPrefix" placeholder="none" spellcheck="false"></label>
+      <label>Document prefix <input name="docPrefix" placeholder="none" spellcheck="false"></label>
+      <p class="note">Changing the model or the document prefix means every document must be embedded again before you can ask.</p>
+      <div class="row end">
+        <span class="note" id="settings-msg"></span>
+        <button type="button" id="reembed" hidden>Re-embed now</button>
+        <button type="submit" class="primary">Save</button>
+      </div>
+    </form>
+    <dl class="facts" id="engine-facts"></dl>
+  </section>
+</main>
+
+<div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

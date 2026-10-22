@@ -1,0 +1,11 @@
+{
+  "id": "rag",
+  "name": "Documents",
+  "hostApi": "1",
+  "view": "plugin.html",
+  "sidebar": {
+    "label": "Documents",
+    "hint": "Ask your files"
+  },
+  "needs": ["node"]
+}
