@@ -1,0 +1,68 @@
+/* A stand-in for the claude and agy CLIs, speaking each one's stream-json.
+ *
+ *   node fake-agent.mjs <claude|agy> <behaviour> [the real CLI's flags...]
+ *
+ * Behaviours: answer, echo (answers with what it was given: flags, cwd,
+ * which API keys it can see, the prompt), replay (the real output recorded
+ * in phase 0), crash, hang, login, deny-once, deny-always, error-with-answer.
+ * npm test spends no subscription because of this (t-fbffe96c78). It is not
+ * named *.test.js, so the test runner does not start it (t-8b630a28cc).
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const [protocol, behaviour, ...flags] = process.argv.slice(2);
+const here = path.dirname(fileURLToPath(import.meta.url));
+const out = (e) => process.stdout.write(JSON.stringify(e) + '\n');
+
+let stdin = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (s) => { stdin += s; });
+process.stdin.on('end', () => {
+  const msg = JSON.parse(stdin.trim().split('\n')[0]);
+  const prompt = protocol === 'claude' ? msg.message.content[0].text : msg.message.content;
+  const keys = ['ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY'].filter((k) => k in process.env);
+  const flag = (name) => { const i = flags.indexOf(name); return i >= 0 ? flags[i + 1] : null; };
+
+  if (behaviour === 'replay') {
+    process.stdout.write(fs.readFileSync(path.join(here, 'recorded', `${protocol}-stream.jsonl`), 'utf8'));
+    return;
+  }
+  if (behaviour === 'crash') { process.stderr.write('boom: something broke\n'); process.exit(3); }
+  if (behaviour === 'hang') { setInterval(() => {}, 1000); return; }
+
+  let answer = 'The vault code is 7741 [1].';
+  if (behaviour === 'echo') answer = JSON.stringify({ flags, cwd: process.cwd(), keys, prompt });
+
+  if (protocol === 'claude') {
+    const session = flag('--resume') || 'sess-1';
+    out({ type: 'system', subtype: 'init', session_id: session, tools: [], mcp_servers: [], apiKeySource: 'none', model: flag('--model') || 'default' });
+    if (behaviour === 'login') {
+      out({ type: 'result', subtype: 'success', is_error: true, result: 'Invalid API key · Please run /login', session_id: session });
+      return;
+    }
+    for (const piece of answer.match(/.{1,12}/gs)) out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: piece } } });
+    out({ type: 'assistant', message: { content: [{ type: 'text', text: answer }] } });
+    out({ type: 'result', subtype: 'success', is_error: false, result: answer, session_id: session, total_cost_usd: 0.001 });
+    return;
+  }
+
+  // agy
+  const conversation = flag('--conversation') || 'conv-1';
+  out({ event: 'init', conversation_id: conversation, init: { cwd: process.cwd(), tools: ['view_file'] } });
+  out({ event: 'step_update', step_update: { step_index: 0, state: 'DONE', step_type: 'user_input' } });
+  if (behaviour === 'login') {
+    out({ event: 'result', result: { conversation_id: conversation, status: 'ERROR', response: '', error: { message: 'You are not signed in' } } });
+    return;
+  }
+  const textOnly = /plain text only/.test(prompt);
+  if (behaviour === 'deny-always' || (behaviour === 'deny-once' && !textOnly)) {
+    out({ event: 'step_update', step_update: { step_index: 1, state: 'ERROR', step_type: 'tool', tool_name: 'view_file' } });
+    out({ event: 'result', result: { conversation_id: conversation, status: 'SUCCESS', response: '', denied_actions: [{ action: 'view_file', display_name: 'View file' }] } });
+    return;
+  }
+  out({ event: 'step_update', step_update: { step_index: 1, state: 'ACTIVE', step_type: 'agent_response', text_delta: answer } });
+  const status = behaviour === 'error-with-answer' ? 'ERROR' : 'SUCCESS';
+  out({ event: 'result', result: { conversation_id: conversation, status, response: answer, error: status === 'ERROR' ? { message: '503 No capacity' } : null } });
+});
