@@ -6,19 +6,22 @@
  * to call; --include-partial-messages streams the answer token by token.
  * A follow-up question resumes the conversation's session by id rather than
  * resending the history (t-13d777c126). Sonnet unless the setting or the
- * question names another model (t-8316e94d0c).
+ * question names another model (t-8316e94d0c). A run that will never be
+ * resumed - reading an image - keeps no session in the user's Claude history
+ * (t-7ab84e8281).
  */
 import { runAgent, findExecutable, AgentError } from './runner.js';
 
 export const id = 'claude';
 export const DEFAULT_MODEL = 'sonnet';
 
-export function args({ model, system, resume }) {
+export function args({ model, system, resume, persist = true }) {
   const a = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
     '--include-partial-messages', '--safe-mode', '--tools', '', '--strict-mcp-config'];
   if (model) a.push('--model', model);
   if (system) a.push('--append-system-prompt', system);
   if (resume) a.push('--resume', resume);
+  if (!persist) a.push('--no-session-persistence');
   return a;
 }
 
@@ -44,14 +47,14 @@ function classify(message) {
   return new AgentError('failed', `Claude did not answer: ${message}`);
 }
 
-export async function ask({ prompt, images = [], system, model = DEFAULT_MODEL, resume = null, cwd, executable = null,
+export async function ask({ prompt, images = [], system, model = DEFAULT_MODEL, resume = null, persist = true, cwd, executable = null,
   prefixArgs = [], onDelta = () => {}, signal, timeoutMs = 180_000 /* t-293b4573a1 */ }) {
   const exe = executable || findExecutable('claude');
   const state = { init: null, result: null, streamed: false };
   const started = Date.now();
   const { code, stderr } = await runAgent({
     executable: exe,
-    args: [...prefixArgs, ...args({ model, system, resume })],
+    args: [...prefixArgs, ...args({ model, system, resume, persist })],
     input: input(prompt, images),
     cwd,
     timeoutMs,

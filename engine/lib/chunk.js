@@ -177,3 +177,17 @@ export function chunk(blocks, { target = TARGET, overlap = OVERLAP, reserve = ()
   emit();
   return chunks;
 }
+
+/* Text Claude read from images - a figure's reading, a scanned page's
+ * transcription - chunked on its own, never packed in with the author's
+ * words, so a passage always says where its words came from (t-7febde7b9f).
+ * items: [{ heading, blocks, figureId, origin }]; each item's chunks carry
+ * its heading, its figure and its origin. */
+export function chunkApart(items, options = {}) {
+  const out = [];
+  for (const it of items) {
+    const blocks = [{ kind: 'heading', level: 1, text: it.heading }, ...it.blocks];
+    for (const c of chunk(blocks, options)) out.push({ ...c, figureId: it.figureId ?? null, origin: it.origin || 'read' });
+  }
+  return out;
+}

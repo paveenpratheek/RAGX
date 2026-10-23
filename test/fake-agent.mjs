@@ -6,7 +6,8 @@
  * which API keys it can see, the prompt), replay (the real output recorded
  * in phase 0), crash, hang, login, deny-once, deny-always, error-with-answer,
  * cite-unknown (cites a source number that was never given), slow (answers
- * after 0.8 s, to catch a second question arriving mid-answer).
+ * after 0.8 s, to catch a second question arriving mid-answer), read (an
+ * image's reading as JSON), read-prose (a reading that is not JSON).
  * npm test spends no subscription because of this (t-fbffe96c78). It is not
  * named *.test.js, so the test runner does not start it (t-8b630a28cc).
  */
@@ -56,6 +57,9 @@ function turn(msg) {
   let answer = 'The vault code is 7741 [1].';
   if (behaviour === 'echo') answer = JSON.stringify({ flags, cwd: process.cwd(), keys, prompt, images, labels: texts.slice(0, -1), pid: process.pid, turn: turnNo });
   if (behaviour === 'cite-unknown') answer = 'Rent is due monthly [1], and late fees apply [9].';
+  // Reading an image: the JSON the reader asks for, saying what it was given.
+  if (behaviour === 'read') answer = JSON.stringify({ kind: 'chart', text: 'Arm | Cost\nOpus | $5.03\nHaiku | $0.07', description: `A bar chart of reader cost; ${images} image given; flags ${flags.filter((f) => f.startsWith('--no-')).join(' ')}.` });
+  if (behaviour === 'read-prose') answer = 'This looks like a bar chart of costs, with Opus the most expensive.';
   if (behaviour === 'slow') { setTimeout(() => answerWith(answer), 800); return; }
   answerWith(answer);
 

@@ -5,7 +5,7 @@
  */
 import { DatabaseSync } from 'node:sqlite';
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 const SCHEMA = `
 create table if not exists meta (
@@ -65,6 +65,22 @@ create table if not exists figures (
   width   integer not null,
   height  integer not null,
   unique (doc_id, ord)
+);
+
+/* What Claude read in an image, once (t-c214262732): kept by the image's
+ * content and the reader model, so re-indexing or re-embedding a document
+ * never pays for its figures again. parsed is 0 when the reply was not the
+ * JSON asked for and was kept as the description. */
+create table if not exists reads (
+  image_sha   text not null,
+  model       text not null,
+  kind        text,
+  text        text not null default '',
+  description text not null default '',
+  parsed      integer not null default 1,
+  ms          integer,
+  at          text not null,
+  primary key (image_sha, model)
 );
 
 create table if not exists figure_vectors (
@@ -163,8 +179,11 @@ create table if not exists samples_min (
 /* Columns added after their table: [table, column, type]. image_ms is the
  * time a call spent embedding figures, apart from text (t-5b3586cf20). A
  * source's figure_id is the figure it is; figures, as JSON, the ones beside
- * a text source (t-0b97deb139). */
-const COLUMNS = [['calls', 'image_ms', 'integer'], ['sources', 'figure_id', 'integer'], ['sources', 'figures', 'text']];
+ * a text source (t-0b97deb139). A chunk's origin is null for the document's
+ * own words and 'read' for text Claude read from an image, with figure_id
+ * naming the figure or scanned page it was read from (t-7febde7b9f). */
+const COLUMNS = [['calls', 'image_ms', 'integer'], ['sources', 'figure_id', 'integer'], ['sources', 'figures', 'text'],
+  ['chunks', 'figure_id', 'integer'], ['chunks', 'origin', 'text']];
 
 /* `lead` is how many characters at the start of a chunk repeat the end of the
  * one before it - the overlap. Search joins neighbouring chunks by dropping

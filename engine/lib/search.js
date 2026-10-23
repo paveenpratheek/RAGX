@@ -54,7 +54,8 @@ function joinNeighbours(chosen) {
   const passages = [];
   for (const c of byDoc) {
     const last = passages[passages.length - 1];
-    if (last && last.docId === c.doc_id && last.lastOrd === c.ord - 1 && last.heading === c.heading) {
+    // A reading never joins the author's text, or another figure's (t-7febde7b9f).
+    if (last && last.docId === c.doc_id && last.lastOrd === c.ord - 1 && last.heading === c.heading && last.readFrom === (c.figure_id ?? null)) {
       // No overlap (code, table rows): the chunks met at a line break.
       last.text += c.lead ? c.text.slice(c.lead) : '\n' + c.text;
       last.chunkIds.push(c.id);
@@ -72,11 +73,12 @@ function joinNeighbours(chosen) {
       text: c.text,
       chunkIds: [c.id],
       lastOrd: c.ord,
+      readFrom: c.figure_id ?? null,
       score: c.fused.score,
       ranks: { vector: c.fused.ranks[0] || null, keyword: c.fused.ranks[1] || null },
     });
   }
-  for (const p of passages) delete p.lastOrd;
+  for (const p of passages) { delete p.lastOrd; if (p.readFrom === null) delete p.readFrom; }
   return passages.sort((a, b) => b.score - a.score);
 }
 

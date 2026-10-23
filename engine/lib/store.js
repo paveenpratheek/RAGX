@@ -40,8 +40,11 @@ export class Store {
       docChunkIds: p('select id from chunks where doc_id = ?'),
       removeDoc: p('delete from documents where id = ?'),
       deleteChunks: p('delete from chunks where doc_id = ?'),
-      addChunk: p(`insert into chunks (doc_id, ord, heading, text, lead, page_from, page_to)
-                   values (?, ?, ?, ?, ?, ?, ?)`),
+      addChunk: p(`insert into chunks (doc_id, ord, heading, text, lead, page_from, page_to, figure_id, origin)
+                   values (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+      reading: p('select * from reads where image_sha = ? and model = ?'),
+      putReading: p(`insert or replace into reads (image_sha, model, kind, text, description, parsed, ms, at)
+                     values (?, ?, ?, ?, ?, ?, ?, ?)`),
       chunkCount: p('select count(*) n from chunks where doc_id = ?'),
       unembedded: p(`select c.id, c.heading, c.text from chunks c left join vectors v on v.chunk_id = c.id
                      where c.doc_id = ? and v.chunk_id is null order by c.ord`),
@@ -133,7 +136,7 @@ export class Store {
     return transaction(this.db, () => {
       this.q.deleteChunks.run(docId);
       return chunks.map((c, i) => Number(this.q.addChunk.run(
-        docId, i, c.heading || '', c.text, c.lead || 0, c.pageFrom ?? null, c.pageTo ?? null,
+        docId, i, c.heading || '', c.text, c.lead || 0, c.pageFrom ?? null, c.pageTo ?? null, c.figureId ?? null, c.origin ?? null,
       ).lastInsertRowid));
     });
   }
@@ -166,6 +169,16 @@ export class Store {
   figureVectors(embeddedWith) { return this.q.figureVectorsFor.all(embeddedWith).map((r) => ({ id: r.id, vector: fromBlob(r.v) })); }
   docFigureVectors(docId) { return this.q.docFigureVectors.all(docId).map((r) => ({ id: r.id, vector: fromBlob(r.v) })); }
   figure(id) { const r = this.q.figure.get(id); return r ? figureRow(r) : null; }
+
+  /* A reading of an image by a model, or null. */
+  reading(imageSha, model) {
+    const r = this.q.reading.get(imageSha, model);
+    return r ? { kind: r.kind, text: r.text, description: r.description, parsed: Boolean(r.parsed), ms: r.ms } : null;
+  }
+
+  putReading(imageSha, model, r) {
+    this.q.putReading.run(imageSha, model, r.kind ?? null, r.text || '', r.description || '', r.parsed === false ? 0 : 1, r.ms ?? null, now());
+  }
 
   /* What an interrupted embed still owes: chunks with no vector yet. */
   unembedded(docId) { return this.q.unembedded.all(docId); }
