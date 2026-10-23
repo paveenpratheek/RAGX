@@ -335,10 +335,12 @@ function sourceLabel(s) {
 
 /* A figure in a panel: its image, fetched with the token, and its caption.
  * The caption is set as text, like every word from a document (t-1c6e343d0e). */
-function figureBox(id, caption) {
+function figureBox(id, caption, n = null) {
   const box = el('figure', 'fig');
   const img = el('img');
   img.alt = caption || 'Figure';
+  img.title = 'Open full size';
+  img.addEventListener('click', () => openFigure(id, caption, n));
   box.appendChild(img);
   if (caption) box.appendChild(el('figcaption', null, caption));
   engine.figureUrl(id).then((url) => { img.src = url; }).catch(() => box.replaceChildren(el('div', 'note', 'The figure could not be loaded - its document may have been removed.')));
@@ -369,6 +371,54 @@ function addMessage(role, text = '') {
   return m;
 }
 
+/* The figures an answer cites: a figure that is itself a cited source, then
+ * the figures beside cited passages, each once (t-cfd255ac87). */
+const MAX_THUMBS = 6;
+function citedFigures(cited) {
+  const out = [];
+  for (const n of cited) {
+    const s = S.sources.get(n);
+    if (!s) continue;
+    const figs = s.figureId ? [{ figureId: s.figureId, caption: s.text }] : (s.figures || []);
+    for (const f of figs) if (!out.some((x) => x.figureId === f.figureId)) out.push({ ...f, n });
+  }
+  return out.slice(0, MAX_THUMBS);
+}
+
+/* A row of thumbnails under an answer, so a question about a chart is
+ * answered with the chart in view; each opens full size. */
+function thumbs(figures) {
+  const row = el('div', 'thumbs');
+  for (const f of figures) {
+    const b = el('button', 'thumb');
+    b.type = 'button';
+    b.title = `[${f.n}] ${f.caption || 'Figure'} - open full size`;
+    const img = el('img');
+    img.alt = f.caption || 'Figure';
+    b.append(img, el('span', 'n', `[${f.n}]`));
+    engine.figureUrl(f.figureId).then((url) => { img.src = url; }).catch(() => { b.disabled = true; b.title = 'The figure could not be loaded'; });
+    // Its own handler: the thread's would open the passage, not the figure.
+    b.addEventListener('click', (e) => { e.stopPropagation(); openFigure(f.figureId, f.caption, f.n); });
+    row.appendChild(b);
+  }
+  return row;
+}
+
+/* One figure over the page, as large as the window allows. */
+let lightboxSource = null;
+function openFigure(id, caption, n = null) {
+  lightboxSource = n;
+  const img = $('lightbox-img');
+  img.removeAttribute('src');
+  img.alt = caption || 'Figure';
+  $('lightbox-cap').textContent = `${n ? `[${n}] ` : ''}${caption || 'Figure with no caption'}`;
+  $('lightbox-source').hidden = n == null;
+  $('lightbox').hidden = false;
+  engine.figureUrl(id).then((url) => { img.src = url; }).catch(() => { $('lightbox-cap').textContent = 'The figure could not be loaded.'; });
+  $('lightbox-close').focus();
+}
+function closeFigure() { $('lightbox').hidden = true; lightboxSource = null; }
+
 function addMeta(bubble, cited, unknown, warnings) {
   const meta = el('div', 'meta');
   for (const n of cited) {
@@ -381,6 +431,8 @@ function addMeta(bubble, cited, unknown, warnings) {
   }
   if (!cited.length) meta.appendChild(el('span', null, 'No source was cited.'));
   bubble.appendChild(meta);
+  const figures = citedFigures(cited);
+  if (figures.length) bubble.appendChild(thumbs(figures));
   if (unknown.length) bubble.appendChild(el('div', 'warn', `Cites ${unknown.map((n) => `[${n}]`).join(' ')}, which no source has - treat that part with care.`));
   for (const w of warnings || []) bubble.appendChild(el('div', 'warn', w));
 }
@@ -497,8 +549,8 @@ function openSource(n) {
   $('source-title').textContent = `[${s.n}] ${s.docName}`;
   $('source-where').textContent = [s.pageFrom == null ? '' : s.pageFrom === s.pageTo ? `page ${s.pageFrom}` : `pages ${s.pageFrom}-${s.pageTo}`, s.heading].filter(Boolean).join(' · ');
   // A figure shows as its image; a passage shows its text, then the figures beside it.
-  if (s.figureId) $('source-body').replaceChildren(figureBox(s.figureId, s.text));
-  else $('source-body').replaceChildren(el('mark', null, s.text), ...(s.figures || []).map((f) => figureBox(f.figureId, f.caption)));
+  if (s.figureId) $('source-body').replaceChildren(figureBox(s.figureId, s.text, s.n));
+  else $('source-body').replaceChildren(el('mark', null, s.text), ...(s.figures || []).map((f) => figureBox(f.figureId, f.caption, s.n)));
   $('source-more').hidden = !s.chunkIds || !s.chunkIds.length;
 }
 
@@ -1056,6 +1108,10 @@ function wire() {
     if (b) openSource(Number(b.dataset.n));
   });
   $('source-close').addEventListener('click', closeSource);
+  $('lightbox-close').addEventListener('click', closeFigure);
+  $('lightbox').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeFigure(); });
+  $('lightbox-source').addEventListener('click', () => { const n = lightboxSource; closeFigure(); if (n != null) openSource(n); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('lightbox').hidden) closeFigure(); });
   $('source-more').addEventListener('click', moreContext);
 
   // Tracker
