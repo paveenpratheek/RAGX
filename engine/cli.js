@@ -85,7 +85,9 @@ function report(r) {
   else {
     const pages = r.doc.pages ? `, ${r.doc.pages} pages` : '';
     const again = r.rechunked ? ` - chunked again at ${r.target} characters, too dense for the model` : '';
-    console.log(`✓ ${name}: ${r.status}, ${r.doc.chunks} chunks${pages} (id ${r.doc.id})${again}`);
+    const figures = r.figures ? `, ${r.figures} figure${r.figures === 1 ? '' : 's'}` : '';
+    console.log(`✓ ${name}: ${r.status}, ${r.doc.chunks} chunks${figures}${pages} (id ${r.doc.id})${again}`);
+    if (r.figureError) console.log(`  figures could not be read: ${r.figureError}`);
   }
 }
 
@@ -215,7 +217,7 @@ async function main(argv) {
         const docs = engine.list();
         if (!docs.length) console.log('No documents yet.');
         for (const d of docs) {
-          console.log(`${String(d.id).padStart(4)}  ${d.status.padEnd(10)} ${String(d.chunks).padStart(5)} chunks  ${d.name}${d.error ? '  - ' + d.error : ''}`);
+          console.log(`${String(d.id).padStart(4)}  ${d.status.padEnd(10)} ${String(d.chunks).padStart(5)} chunks ${String(d.figures || 0).padStart(3)} figures  ${d.name}${d.error ? '  - ' + d.error : ''}`);
         }
         return 0;
       }

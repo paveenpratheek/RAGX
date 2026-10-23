@@ -180,3 +180,15 @@ test('unsupported and empty files are refused by name', async () => {
   await assert.rejects(extract(Buffer.from('x'), '.rtf'), (e) => e.code === 'unsupported');
   await assert.rejects(extract(Buffer.from('\n\n  \n'), '.txt'), (e) => e.code === 'empty');
 });
+
+test('an XML walk started inside another leaves the outer one where it was', async () => {
+  const { tokens } = await import('../engine/lib/extract/xml.js');
+  const names = [];
+  for (const t of tokens('<a><b/><c/></a>')) {
+    if (t.type === 'text') continue;
+    names.push(t.name);
+    if (t.name === 'b') for (const _ of tokens('<x><y/></x>')) { /* a chart part read mid-document */ }
+    assert.ok(names.length < 10, 'the outer walk started over');
+  }
+  assert.deepEqual(names, ['a', 'b', 'c', 'a']);
+});

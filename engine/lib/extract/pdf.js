@@ -19,8 +19,16 @@
  * pdfjs-dist is the one library here (t-884a03a60e): a PDF's fonts, encodings
  * and compressed object streams are each a project of their own.
  */
+import { createRequire } from 'node:module';
+import path from 'node:path';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { ExtractError } from './errors.js';
+import { pdfFigures } from './pdf-figures.js';
+
+// The 14 standard fonts a PDF may name without embedding, so a figure's
+// labels set in them render in its crop. pdf.js reads them from disk in Node.
+// pdf.js insists on a trailing forward slash, which Node's fs reads on Windows too.
+const STANDARD_FONTS = path.join(path.dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json')), 'standard_fonts').replace(/\\/g, '/') + '/';
 
 const PAGE_NUMBER = /^\s*(?:page\s*)?\d{1,4}(?:\s*(?:of|\/)\s*\d{1,4})?\s*$/i;
 
@@ -86,6 +94,7 @@ export async function extractPdf(buf) {
     isEvalSupported: false,
     disableFontFace: true,
     useSystemFonts: false,
+    standardFontDataUrl: STANDARD_FONTS,
     verbosity: 0,
   });
   try {
@@ -107,6 +116,10 @@ export async function extractPdf(buf) {
 
     const all = pages.flat();
     if (all.reduce((s, l) => s + l.text.length, 0) < 10) {
+      // A scan has no text to read, but each page is a figure, found by its picture (t-e49453874c).
+      let figures = [];
+      try { figures = await pdfFigures(doc); } catch (_) { /* refused below as before */ }
+      if (figures.length) return { blocks: [], pages: doc.numPages, figures, figureError: null };
       throw new ExtractError('scanned', 'The PDF has no text layer - it looks scanned, and OCR is not supported.');
     }
 
@@ -168,7 +181,16 @@ export async function extractPdf(buf) {
       endHeading();
       if (para) blocks.push(para);
     });
-    return { blocks, pages: doc.numPages };
+    // A figure the reader cannot place costs the figures, never the text (t-e217be48f6).
+    const headingAt = (n) => {
+      let h = '';
+      for (const b of blocks) { if (b.page > n) break; if (b.kind === 'heading') h = b.text; }
+      return h;
+    };
+    let figures = [];
+    let figureError = null;
+    try { figures = await pdfFigures(doc, headingAt); } catch (e) { figureError = e.message; }
+    return { blocks, pages: doc.numPages, figures, figureError };
   } finally {
     await task.destroy();
   }

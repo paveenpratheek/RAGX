@@ -21,7 +21,7 @@ function addReadyDoc(store, name, chunks, embeddedWith = 'm') {
 
 test('meta keeps the schema version and settings', (t) => {
   const s = tempStore(t);
-  assert.equal(s.getMeta('schema_version'), '3');
+  assert.equal(s.getMeta('schema_version'), '4');
   assert.equal(s.getMeta('embed_model', 'none'), 'none');
   s.setMeta('embed_model', 'nomic');
   s.setMeta('embed_model', 'bge');

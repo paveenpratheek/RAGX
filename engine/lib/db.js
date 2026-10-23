@@ -5,7 +5,7 @@
  */
 import { DatabaseSync } from 'node:sqlite';
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 const SCHEMA = `
 create table if not exists meta (
@@ -44,6 +44,32 @@ create table if not exists chunks (
 create table if not exists vectors (
   chunk_id integer primary key references chunks(id) on delete cascade,
   v        blob not null
+);
+
+/* A figure is a chart, diagram or picture cropped to its own PNG in the data
+ * folder (t-d3dd407413). box is where it sits on its page, in PDF points
+ * (y up) as JSON; anchor is text beside it in the document. Its vector is
+ * made by the same model as the chunks', so one search reaches both
+ * (t-ba2cbf35c7). */
+create table if not exists figures (
+  id      integer primary key,
+  doc_id  integer not null references documents(id) on delete cascade,
+  ord     integer not null,
+  kind    text not null,
+  page    integer,
+  box     text,
+  caption text not null default '',
+  heading text not null default '',
+  anchor  text not null default '',
+  file    text not null,
+  width   integer not null,
+  height  integer not null,
+  unique (doc_id, ord)
+);
+
+create table if not exists figure_vectors (
+  figure_id integer primary key references figures(id) on delete cascade,
+  v         blob not null
 );
 
 create virtual table if not exists chunks_fts using fts5(

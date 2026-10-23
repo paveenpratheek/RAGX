@@ -1,11 +1,13 @@
 /* One door for every supported format. Each reader returns
- *   { blocks: [{ kind: 'heading' | 'para' | 'code' | 'table', text, level?, page?, rows? }], pages }
- * in reading order; the chunker takes it from there.
+ *   { blocks: [{ kind: 'heading' | 'para' | 'code' | 'table', text, level?, page?, rows? }], pages, figures? }
+ * in reading order; the chunker takes the blocks from there, and figures are
+ * described in figures.js.
  */
 import { extractDocx } from './docx.js';
 import { extractPdf } from './pdf.js';
 import { extractMarkdown } from './markdown.js';
 import { extractText, decodeText } from './text.js';
+import { extractImage } from './image.js';
 import { ExtractError } from './errors.js';
 
 export { ExtractError };
@@ -17,7 +19,14 @@ const READERS = {
   '.markdown': (buf) => extractMarkdown(decodeText(buf)),
   '.txt': (buf) => extractText(decodeText(buf)),
   '.text': (buf) => extractText(decodeText(buf)),
+  '.png': extractImage,
+  '.jpg': extractImage,
+  '.jpeg': extractImage,
+  '.webp': extractImage,
+  '.gif': extractImage,
 };
+
+export const IMAGE_TYPES = ['.png', '.jpg', '.jpeg', '.webp', '.gif'];
 
 export const SUPPORTED = Object.keys(READERS);
 
@@ -27,6 +36,8 @@ export async function extract(buf, ext) {
     throw new ExtractError('unsupported', `${ext || 'This file type'} is not supported - use ${SUPPORTED.join(', ')}.`);
   }
   const out = await read(buf);
-  if (!out.blocks.some((b) => b.text.trim())) throw new ExtractError('empty', 'The document has no text.');
+  out.figures = out.figures || [];
+  // A document of figures alone - an image file, a scanned PDF - is kept for them.
+  if (!out.blocks.some((b) => b.text.trim()) && !out.figures.length) throw new ExtractError('empty', 'The document has no text.');
   return out;
 }

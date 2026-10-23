@@ -12,6 +12,7 @@
     "rag": "node engine/cli.js"
   },
   "dependencies": {
+    "@napi-rs/canvas": "1.0.13",
     "pdfjs-dist": "6.4.299"
   }
 }

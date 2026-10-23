@@ -81,6 +81,25 @@ export class Engine {
 
   fileOf(doc) { return path.join(this.dir, 'files', doc.sha256 + doc.ext); }
 
+  figuresDir(docId) { return path.join(this.dir, 'figures', String(docId)); }
+
+  /* A figure's PNG on disk; null for a figure the store does not know. */
+  figurePath(figure) { return figure ? path.join(this.dir, figure.file) : null; }
+
+  /* A document's figures as PNG files under figures/<doc>/ and rows in the
+   * store, replacing what an earlier reading left. */
+  saveFigures(docId, figures) {
+    const dir = this.figuresDir(docId);
+    fs.rmSync(dir, { recursive: true, force: true });
+    if (figures.length) fs.mkdirSync(dir, { recursive: true });
+    const rows = figures.map((f, i) => {
+      const file = path.join('figures', String(docId), `${i + 1}.png`);
+      fs.writeFileSync(path.join(this.dir, file), f.png);
+      return { ...f, file: file.split(path.sep).join('/') };
+    });
+    return this.store.replaceFigures(docId, rows);
+  }
+
   /* Adds one file. A file already indexed (same bytes, any name) is not added
    * twice; one an earlier run left half-done is finished. Never throws for a
    * bad document - the result says what happened to it. */
@@ -159,8 +178,17 @@ export class Engine {
   async build(doc, say, stats = null) {
     this.store.setStatus(doc.id, STATUS.extracting);
     say('extracting');
-    const { blocks, pages } = await extract(fs.readFileSync(this.fileOf(doc)), doc.ext);
+    const { blocks, pages, figures, figureError } = await extract(fs.readFileSync(this.fileOf(doc)), doc.ext);
     this.store.setPages(doc.id, pages);
+    const saved = this.saveFigures(doc.id, figures);
+    const found = { figures: saved.length, figureError: figureError || null };
+    // A document of figures alone - an image file, a scan - has no text to chunk.
+    if (!blocks.some((b) => b.text.trim())) {
+      if (this.index) this.index.remove(this.store.docChunkIds(doc.id));
+      this.store.replaceChunks(doc.id, []);
+      this.store.setEmbedding(doc.id, this.embedder.signature);
+      return { target: null, rechunked: 0, ...found };
+    }
     const first = targetFor(await this.windowTokens());
     // The "document > heading" line is embedded with every chunk, so it
     // comes out of the same budget.
@@ -169,13 +197,13 @@ export class Engine {
     for (const [tries, scale] of FALLBACK.entries()) {
       const target = Math.round(first * scale);
       const chunks = chunk(blocks, { target, reserve });
-      if (!chunks.length) throw new ExtractError('empty', 'The document has no text outside its headings.');
+      if (!chunks.length && !saved.length) throw new ExtractError('empty', 'The document has no text outside its headings.');
       if (this.index) this.index.remove(this.store.docChunkIds(doc.id));
       this.store.replaceChunks(doc.id, chunks);
       this.store.setEmbedding(doc.id, this.embedder.signature);
       try {
         await this.embedMissing(doc, say, stats);
-        return { target, rechunked: tries };
+        return { target, rechunked: tries, ...found };
       } catch (e) {
         if (!(e instanceof EmbedError && e.code === 'too-long')) throw e;
         lastError = e;
@@ -282,6 +310,7 @@ export class Engine {
     this.store.removeDoc(id);
     if (this.index) this.index.remove(chunkIds);
     fs.rmSync(this.fileOf(doc), { force: true });
+    fs.rmSync(this.figuresDir(id), { recursive: true, force: true });
     return doc;
   }
 

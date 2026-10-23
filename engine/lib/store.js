@@ -15,6 +15,8 @@ export const STATUS = Object.freeze({
 
 const now = () => new Date().toISOString();
 
+const figureRow = (r) => ({ ...r, box: r.box ? JSON.parse(r.box) : null });
+
 export class Store {
   constructor(file) {
     this.db = openDb(file);
@@ -24,7 +26,7 @@ export class Store {
       setMeta: p('insert into meta (key, value) values (?, ?) on conflict (key) do update set value = excluded.value'),
       docBySha: p('select * from documents where sha256 = ?'),
       doc: p('select * from documents where id = ?'),
-      docs: p('select * from documents order by id'),
+      docs: p('select d.*, (select count(*) from figures f where f.doc_id = d.id) figures from documents d order by d.id'),
       addDoc: p(`insert into documents (sha256, name, ext, source_path, bytes, status, added_at, updated_at)
                  values (?, ?, ?, ?, ?, 'queued', ?, ?)`),
       setStatus: p('update documents set status = ?, error = ?, updated_at = ? where id = ?'),
@@ -58,7 +60,7 @@ export class Store {
       stale: p(`select * from documents where status = 'ready' and (embedded_with is null or embedded_with <> ?)`),
       pending: p(`select * from documents where status in ('queued', 'extracting', 'embedding') order by id`),
       totals: p(`select (select count(*) from documents) docs, (select count(*) from chunks) chunks,
-                        (select count(*) from vectors) vectors`),
+                        (select count(*) from vectors) vectors, (select count(*) from figures) figures`),
       addConversation: p('insert into conversations (agent, model, title, created_at, updated_at) values (?, ?, ?, ?, ?)'),
       conversation: p('select * from conversations where id = ?'),
       conversations: p(`select c.*, (select count(*) from messages m where m.conversation_id = c.id and m.role = 'user') questions
@@ -70,6 +72,11 @@ export class Store {
                     values (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
       sources: p('select * from sources where conversation_id = ? order by n'),
       deleteConversation: p('delete from conversations where id = ?'),
+      deleteFigures: p('delete from figures where doc_id = ?'),
+      addFigure: p(`insert into figures (doc_id, ord, kind, page, box, caption, heading, anchor, file, width, height)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+      docFigures: p('select * from figures where doc_id = ? order by ord'),
+      figure: p('select f.*, d.name doc_name from figures f join documents d on d.id = f.doc_id where f.id = ?'),
     };
   }
 
@@ -122,6 +129,22 @@ export class Store {
       ).lastInsertRowid));
     });
   }
+
+  /* A document's figures, replacing any it had; files are the engine's to
+   * write and remove. Returns the new rows in order. */
+  replaceFigures(docId, figures) {
+    return transaction(this.db, () => {
+      this.q.deleteFigures.run(docId);
+      return figures.map((f, i) => {
+        const id = Number(this.q.addFigure.run(docId, i, f.kind, f.page ?? null, f.box ? JSON.stringify(f.box) : null,
+          f.caption || '', f.heading || '', f.anchor || '', f.file, f.width, f.height).lastInsertRowid);
+        return this.figure(id);
+      });
+    });
+  }
+
+  docFigures(docId) { return this.q.docFigures.all(docId).map(figureRow); }
+  figure(id) { const r = this.q.figure.get(id); return r ? figureRow(r) : null; }
 
   /* What an interrupted embed still owes: chunks with no vector yet. */
   unembedded(docId) { return this.q.unembedded.all(docId); }

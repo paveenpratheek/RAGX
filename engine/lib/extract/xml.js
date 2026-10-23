@@ -17,10 +17,14 @@ export function decode(s) {
   });
 }
 
+/* Each walk has its own copy of the pattern: a /g regex keeps its place in
+ * lastIndex, and a walk started inside another - a chart part read while the
+ * document is being walked - would reset the outer one's place, which then
+ * walked the document again forever (t-73592a63ed). */
 export function* tokens(xml) {
-  TOKEN.lastIndex = 0;
+  const re = new RegExp(TOKEN.source, 'g');
   let m;
-  while ((m = TOKEN.exec(xml))) {
+  while ((m = re.exec(xml))) {
     if (m[1] !== undefined) yield { type: 'text', text: m[1] };
     else if (m[3]) {
       const kind = m[2] ? 'close' : m[5] ? 'self' : 'open';
