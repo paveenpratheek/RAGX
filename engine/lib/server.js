@@ -150,9 +150,9 @@ export async function startServer({
     return { source, client };
   };
   const figureView = (f) => ({ id: f.id, docId: f.doc_id, docName: f.doc_name, kind: f.kind, page: f.page, caption: f.caption,
-    heading: f.heading, anchor: f.anchor, width: f.width, height: f.height });
+    heading: f.heading, anchor: f.anchor, width: f.width, height: f.height, read: Boolean(f.read), reading: engine.store.figureReading(f.id) || null });
   const passageDetail = (p) => ({ n: p.n, docName: p.docName, heading: p.heading, pageFrom: p.pageFrom, pageTo: p.pageTo, score: p.score, chunkIds: p.chunkIds, text: p.text,
-    figureId: p.figureId ?? undefined, figures: p.figures && p.figures.length ? p.figures : undefined });
+    figureId: p.figureId ?? undefined, figures: p.figures && p.figures.length ? p.figures : undefined, reading: p.reading || undefined });
 
   const queue = [];
   let current = null;

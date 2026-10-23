@@ -134,10 +134,14 @@ test('a figure beside a source goes to Claude as an image, labelled; Antigravity
   assert.equal(seen.images, 1);
   assert.match(seen.labels[0], /^The figure beside source \[1\] - Figure 1 - Costs by region in 2024\.:$/);
   assert.match(seen.prompt, /\(Beside this passage: figure "Figure 1 - Costs by region in 2024\." - its image is given\.\)/);
+  // What Claude read in the figure at ingest goes with it, labelled as a model's reading.
+  assert.match(seen.prompt, /its image is given\.\)\nRead from the image by a model \(may contain errors\):\nDescribed from the image: A bar chart/);
+  assert.match(RULES, /read from the image/);
   assert.match(RULES, /figures/);
   assert.equal(r.images, 1);
   // The source keeps its figure, so a reopened conversation can show it.
   assert.deepEqual(engine.store.sources(r.conversationId)[0].figures.map((f) => f.figureId), [fig.id]);
+  assert.match(engine.store.sources(r.conversationId)[0].figures[0].reading, /Opus \| \$5\.03/, 'the reading is kept with the conversation');
 
   const a = await askWith('echo', { question: 'Which region cost the most in 2024?', agent: 'agy' });
   const agySeen = JSON.parse(a.answer);

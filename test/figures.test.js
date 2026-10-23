@@ -226,14 +226,17 @@ test('a figure the question does not reach is not shown, and a passage carries a
   ], { parts: { rId1: { name: 'media/a.png', data: png(300, 300, '#a00') }, rId2: { name: 'media/b.png', data: png(300, 300, '#0a0') }, rId3: { name: 'media/c.png', data: png(300, 300, '#00a') } } });
   await e.ingest(file('antenna.docx', docx));
   const all = (await e.search('radiation pattern')).passages;
-  // The author's passage; the figures' readings come back too, as their own passages.
-  const text = all.filter((p) => !p.figureId && !p.readFrom);
+  // The author's passage; figures come back beside it or as results of their own.
+  const text = all.filter((p) => !p.figureId);
   assert.equal(text.length, 1);
   assert.equal(text[0].figures.length, 2, 'the two the question reaches best, not all three');
   assert.equal(all.filter((p) => p.figureId).length, 1, 'the third, reached too, is a result of its own');
+  assert.ok(all.every((p) => !p.readFrom), 'a reading never comes back as a passage of its own');
   e.figureFloor = 2; // no cosine reaches 2
   const none = (await e.search('radiation pattern')).passages;
-  assert.deepEqual([none[0].figures.length, none.filter((p) => p.figureId).length], [0, 0]);
+  // Out of reach by look, figures still come back through their readings' words - never by look alone.
+  assert.equal(none.find((p) => !p.figureId).figures.length, 0);
+  assert.ok(none.filter((p) => p.figureId).every((p) => p.chunkIds.length && p.reading), 'found by reading, not by image');
 });
 
 test('a passage holding a figure\'s caption brings the figure with it', async (t) => {
@@ -244,7 +247,8 @@ test('a passage holding a figure\'s caption brings the figure with it', async (t
   const { passages } = await e.search('costs by region in 2024');
   const withFigure = passages.find((p) => p.figures.length);
   assert.ok(withFigure, 'the passage with the caption carries the figure');
-  assert.deepEqual(withFigure.figures, [{ figureId: fig.id, kind: 'drawing', page: 1, caption: 'Figure 1 - Costs by region in 2024.' }]);
+  assert.deepEqual(withFigure.figures.map(({ reading, ...f }) => f), [{ figureId: fig.id, kind: 'drawing', page: 1, caption: 'Figure 1 - Costs by region in 2024.' }]);
+  assert.match(withFigure.figures[0].reading, /^Described from the image: A bar chart/, 'the figure brings what Claude read in it');
   assert.ok(!passages.some((p) => p.figureId === fig.id), 'a figure beside a passage found is not a second result');
 });
 
@@ -257,6 +261,8 @@ test('a figure found on its own is a result of its own, saying what it is', asyn
   const { passages } = await e.search('a picture of the office');
   const hit = passages.find((p) => p.figureId);
   assert.ok(hit, JSON.stringify(passages.map((p) => p.docName)));
-  assert.deepEqual([hit.figureId, hit.docName, hit.text, hit.chunkIds], [fig.id, 'photo.png', 'A picture with no caption', []]);
-  assert.ok(hit.ranks.figure >= 1);
+  assert.deepEqual([hit.figureId, hit.docName, hit.text], [fig.id, 'photo.png', 'A picture with no caption']);
+  assert.match(hit.reading, /Described from the image/);
+  // Reached by its image, or by the words Claude read in it.
+  assert.ok(hit.ranks.figure >= 1 || hit.ranks.vector >= 1 || hit.ranks.keyword >= 1, JSON.stringify(hit.ranks));
 });

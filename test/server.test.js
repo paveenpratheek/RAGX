@@ -360,7 +360,9 @@ test('a figure is served as its details and its PNG, and an agent fetching one i
   const { figures } = await (await call(`/api/docs/${doc.id}/figures`)).json();
   assert.deepEqual(figures.map((f) => [f.docName, f.kind, f.page, f.caption]), [['costs.pdf', 'drawing', 1, 'Figure 1 - Costs by region in 2024.']]);
   const id = figures[0].id;
-  assert.equal((await (await call(`/api/figures/${id}`)).json()).caption, 'Figure 1 - Costs by region in 2024.');
+  const view = await (await call(`/api/figures/${id}`)).json();
+  assert.deepEqual([view.caption, view.read], ['Figure 1 - Costs by region in 2024.', true]);
+  assert.match(view.reading, /^Described from the image/);
   const img = await call(`/api/figures/${id}/image`, { headers: { 'x-rag-client': 'mcp:claude-code/2.1.308 cwd=E:\work' } });
   assert.equal(img.headers.get('content-type'), 'image/png');
   const bytes = Buffer.from(await img.arrayBuffer());

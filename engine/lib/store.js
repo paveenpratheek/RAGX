@@ -29,6 +29,7 @@ export class Store {
                 (select count(*) from figures f where f.doc_id = d.id and f.read = 1) figures_read from documents d where d.id = ?`),
       maxOrd: p('select coalesce(max(ord), -1) m from chunks where doc_id = ?'),
       setFigureRead: p('update figures set read = 1 where id = ?'),
+      figureReading: p("select text, lead from chunks where figure_id = ? and origin = 'read' order by ord"),
       unreadDocs: p(`select distinct d.* from documents d join figures f on f.doc_id = d.id
                      where d.status = 'ready' and coalesce(f.read, 0) = 0 order by d.id`),
       docs: p(`select d.*, (select count(*) from figures f where f.doc_id = d.id) figures,
@@ -78,8 +79,8 @@ export class Store {
       setSession: p('update conversations set session = ?, model = coalesce(?, model), updated_at = ? where id = ?'),
       addMessage: p('insert into messages (conversation_id, role, text, cited, unknown, created_at) values (?, ?, ?, ?, ?, ?)'),
       messages: p('select * from messages where conversation_id = ? order by id'),
-      addSource: p(`insert into sources (conversation_id, n, chunk_ids, doc_id, doc_name, heading, page_from, page_to, text, figure_id, figures)
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+      addSource: p(`insert into sources (conversation_id, n, chunk_ids, doc_id, doc_name, heading, page_from, page_to, text, figure_id, figures, reading)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
       sources: p('select * from sources where conversation_id = ? order by n'),
       deleteConversation: p('delete from conversations where id = ?'),
       deleteFigures: p('delete from figures where doc_id = ?'),
@@ -188,6 +189,12 @@ export class Store {
 
   setFigureRead(id) { this.q.setFigureRead.run(id); }
 
+  /* What Claude read in a figure, whole: its reading's chunks joined, each
+   * one's overlap with the one before dropped. Empty when not read. */
+  figureReading(figureId) {
+    return this.q.figureReading.all(figureId).map((c, i) => (!i ? c.text : c.lead ? c.text.slice(c.lead) : '\n' + c.text)).join('').trim();
+  }
+
   /* Ready documents with a figure not read yet. */
   unreadDocs() { return this.q.unreadDocs.all(); }
 
@@ -258,7 +265,8 @@ export class Store {
     transaction(this.db, () => {
       for (const s of sources) {
         this.q.addSource.run(conversationId, s.n, JSON.stringify(s.chunkIds), s.docId ?? null, s.docName,
-          s.heading || '', s.pageFrom ?? null, s.pageTo ?? null, s.text, s.figureId ?? null, s.figures && s.figures.length ? JSON.stringify(s.figures) : null);
+          s.heading || '', s.pageFrom ?? null, s.pageTo ?? null, s.text, s.figureId ?? null, s.figures && s.figures.length ? JSON.stringify(s.figures) : null,
+          s.reading || null);
       }
     });
   }
@@ -267,7 +275,7 @@ export class Store {
     return this.q.sources.all(conversationId).map((s) => ({
       n: s.n, chunkIds: JSON.parse(s.chunk_ids), docId: s.doc_id, docName: s.doc_name,
       heading: s.heading, pageFrom: s.page_from, pageTo: s.page_to, text: s.text,
-      figureId: s.figure_id ?? null, figures: s.figures ? JSON.parse(s.figures) : [],
+      figureId: s.figure_id ?? null, figures: s.figures ? JSON.parse(s.figures) : [], reading: s.reading || null,
     }));
   }
 

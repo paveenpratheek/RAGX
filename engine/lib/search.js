@@ -99,7 +99,8 @@ export function figureText(f) {
   return `${what} with no caption${f.anchor ? `, beside: "${f.anchor.slice(0, 160)}"` : ''}`;
 }
 
-const figureRef = (f) => ({ figureId: f.id, kind: f.kind, page: f.page, caption: f.caption });
+/* A figure beside a passage, with what Claude read in it, if it was read. */
+const figureRef = (store, f) => ({ figureId: f.id, kind: f.kind, page: f.page, caption: f.caption, reading: store.figureReading(f.id) || undefined });
 
 /* How close a question must come to a figure for the figure to count as
  * found. Measured with embeddinggemma-2 on the user's documents: questions
@@ -148,24 +149,45 @@ export function hybridSearch({ store, index, figureIndex = null, question, query
   const byDoc = new Map();
   const figuresOf = (docId) => { if (!byDoc.has(docId)) byDoc.set(docId, store.docFigures(docId)); return byDoc.get(docId); };
   const attached = new Set();
-  for (const p of passages) {
+  const own = passages.filter((p) => !p.readFrom);
+  for (const p of own) {
     const text = flat(p.text);
     let inside = figuresOf(p.docId).filter((f) => { const key = anchorKey(f); return key && text.includes(key); });
     if (pictures.length) inside = inside.filter((f) => reached(f.id)).sort((a, b) => rank.get(a.id).rank - rank.get(b.id).rank);
-    p.figures = inside.slice(0, perPassage).map(figureRef);
+    p.figures = inside.slice(0, perPassage).map((f) => figureRef(store, f));
     for (const f of p.figures) attached.add(f.figureId);
+  }
+
+  /* A passage Claude read from an image comes back as that image's figure,
+   * with the reading beside it - never as text of the document's own
+   * (t-7febde7b9f). A figure already beside a passage found goes with that
+   * passage; several pieces of one reading are one result (t-0b8f6aab0e).
+   * The figure floor is for finding a figure by its look; one whose reading
+   * the question reaches comes back however far its image is (t-44b0b2c989). */
+  const asFigure = new Map();
+  for (const p of passages.filter((x) => x.readFrom)) {
+    if (attached.has(p.readFrom)) continue;
+    const seen = asFigure.get(p.readFrom);
+    if (seen) { seen.score = Math.max(seen.score, p.score); seen.chunkIds.push(...p.chunkIds); continue; }
+    const f = store.figure(p.readFrom);
+    if (f) asFigure.set(f.id, figureResult(store, f, { score: p.score, ranks: p.ranks, chunkIds: [...p.chunkIds] }));
   }
   const alone = [];
   for (const h of pictures) {
     if (alone.length === maxFigures || h.score < figureFloor) break;
-    if (attached.has(h.id)) continue;
+    if (attached.has(h.id) || asFigure.has(h.id)) continue;
     const f = store.figure(h.id);
-    if (!f) continue;
-    alone.push({
-      docId: f.doc_id, docName: f.doc_name, heading: f.heading, pageFrom: f.page, pageTo: f.page,
-      text: figureText(f), chunkIds: [], figureId: f.id, kind: f.kind, figures: [],
-      score: h.score, ranks: { figure: rank.get(h.id).rank },
-    });
+    if (f) alone.push(figureResult(store, f, { score: h.score, ranks: { figure: rank.get(h.id).rank }, chunkIds: [] }));
   }
-  return [...passages.sort((a, b) => b.score - a.score), ...alone];
+  return [...[...own, ...asFigure.values()].sort((a, b) => b.score - a.score), ...alone];
+}
+
+/* A figure as a result of its own: its caption as its text, and what Claude
+ * read in it, if it was read. */
+function figureResult(store, f, { score, ranks, chunkIds }) {
+  return {
+    docId: f.doc_id, docName: f.doc_name, heading: f.heading, pageFrom: f.page, pageTo: f.page,
+    text: figureText(f), reading: store.figureReading(f.id) || undefined, chunkIds, figureId: f.id, kind: f.kind, figures: [],
+    score, ranks,
+  };
 }

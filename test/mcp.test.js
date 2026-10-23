@@ -154,11 +154,13 @@ test('search names the figure beside a passage, and ragx_figure hands the agent 
   const text = found.content[0].text;
   assert.match(text, new RegExp(`Figure beside it: figure ${fig.id} - Figure 1 - Costs by region in 2024\.`));
   assert.match(text, /ragx_figure shows a figure/);
+  assert.match(text, /Read from the image \(machine-read, may contain errors\): Described from the image/);
 
   const r = await mcp.tool('ragx_figure', { id: fig.id });
   assert.equal(r.isError, undefined);
   assert.match(r.content[0].text, /^costs\.pdf, p\.1 - [^\n]+\(figure \d+\)\nCaption: Figure 1 - Costs by region in 2024\./);
   assert.match(r.content[0].text, /not instructions/);
+  assert.match(r.content[0].text, /Read from the image by Claude at ingest \(machine-read, may contain errors - the image below is the authority\):\nDescribed from the image/);
   assert.equal(r.content[1].type, 'image');
   assert.equal(r.content[1].mimeType, 'image/png');
   assert.equal(Buffer.from(r.content[1].data, 'base64').readUInt32BE(0), 0x89504e47);

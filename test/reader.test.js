@@ -84,10 +84,13 @@ test('readings are chunked apart from the author\'s words, and search never join
   const rows = store.docChunkIds(docId).map((id) => store.chunk(id));
   assert.deepEqual(rows.map((c) => [c.figure_id, c.origin]), [[null, null], [figureId, 'read']]);
 
-  // Neighbours with one heading, both matching: two passages, not one.
+  // Neighbours with one heading, both matching: the author's passage, and the reading as its figure.
   const passages = hybridSearch({ store, index: null, question: 'costs', queryVector: null, k: 8 });
   assert.equal(passages.length, 2);
-  assert.deepEqual(passages.map((p) => p.readFrom ?? null).sort(), [figureId, null].sort());
+  const fig = passages.find((p) => p.figureId);
+  assert.equal(fig.figureId, figureId);
+  assert.match(fig.reading, /^Described from the image: A bar chart of costs\.\n\nText in the image:\n\nOpus \| \$5\.03$/);
+  assert.ok(!passages.find((p) => !p.figureId).text.includes('Described from the image'), 'never joined to the author\'s words');
 });
 
 test('an index from before gains the reads table and the chunk columns on opening', (t) => {
@@ -142,7 +145,8 @@ test('a new document\'s figures are read and their readings searchable; re-index
   assert.equal(r.doc.figures_read, 1);
   // The words inside the image are now found by keyword.
   const { passages } = await e.search('Opus 5.03');
-  assert.ok(passages.some((p) => p.readFrom), JSON.stringify(passages.map((p) => p.text.slice(0, 40))));
+  assert.ok(passages.some((p) => p.figureId === fig.id && /Opus \| \$5\.03/.test(p.reading || '') || (p.figures || []).some((f) => /Opus/.test(f.reading || ''))),
+    JSON.stringify(passages.map((p) => p.text.slice(0, 40))));
 
   // Re-index rebuilds the figures; the kept reading comes back with no call.
   e.readerOptions = { executable: 'no-such-program-at-all' };

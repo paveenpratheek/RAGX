@@ -184,10 +184,12 @@ create table if not exists samples_min (
  * naming the figure or scanned page it was read from (t-7febde7b9f). A
  * figure's read is 1 once its reading is in the document's chunks; a call's
  * read_ms, reads and read_cached are the time spent reading images, the
- * readings made and those taken from the kept ones. */
+ * readings made and those taken from the kept ones. A figure source's
+ * reading is what Claude read in it, kept with the conversation. */
 const COLUMNS = [['calls', 'image_ms', 'integer'], ['sources', 'figure_id', 'integer'], ['sources', 'figures', 'text'],
   ['chunks', 'figure_id', 'integer'], ['chunks', 'origin', 'text'],
-  ['figures', 'read', 'integer'], ['calls', 'read_ms', 'integer'], ['calls', 'reads', 'integer'], ['calls', 'read_cached', 'integer']];
+  ['figures', 'read', 'integer'], ['calls', 'read_ms', 'integer'], ['calls', 'reads', 'integer'], ['calls', 'read_cached', 'integer'],
+  ['sources', 'reading', 'text']];
 
 /* `lead` is how many characters at the start of a chunk repeat the end of the
  * one before it - the overlap. Search joins neighbouring chunks by dropping

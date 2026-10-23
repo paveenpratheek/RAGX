@@ -355,7 +355,7 @@ function sourceLabel(s) {
 
 /* A figure in a panel: its image, fetched with the token, and its caption.
  * The caption is set as text, like every word from a document (t-1c6e343d0e). */
-function figureBox(id, caption, n = null) {
+function figureBox(id, caption, n = null, reading = null) {
   const box = el('figure', 'fig');
   const img = el('img');
   img.alt = caption || 'Figure';
@@ -363,6 +363,12 @@ function figureBox(id, caption, n = null) {
   img.addEventListener('click', () => openFigure(id, caption, n));
   box.appendChild(img);
   if (caption) box.appendChild(el('figcaption', null, caption));
+  // What Claude read in it, under the image and marked as such - the image is the authority (t-8be56aa93b).
+  if (reading) {
+    const r = el('div', 'reading');
+    r.append(el('div', 'reading-label', 'Read from the image by Claude - machine-read, may contain errors'), el('div', 'reading-text', reading));
+    box.appendChild(r);
+  }
   engine.figureUrl(id).then((url) => { img.src = url; }).catch(() => box.replaceChildren(el('div', 'note', 'The figure could not be loaded - its document may have been removed.')));
   return box;
 }
@@ -569,9 +575,10 @@ function openSource(n) {
   $('source-title').textContent = `[${s.n}] ${s.docName}`;
   $('source-where').textContent = [s.pageFrom == null ? '' : s.pageFrom === s.pageTo ? `page ${s.pageFrom}` : `pages ${s.pageFrom}-${s.pageTo}`, s.heading].filter(Boolean).join(' · ');
   // A figure shows as its image; a passage shows its text, then the figures beside it.
-  if (s.figureId) $('source-body').replaceChildren(figureBox(s.figureId, s.text, s.n));
-  else $('source-body').replaceChildren(el('mark', null, s.text), ...(s.figures || []).map((f) => figureBox(f.figureId, f.caption, s.n)));
-  $('source-more').hidden = !s.chunkIds || !s.chunkIds.length;
+  if (s.figureId) $('source-body').replaceChildren(figureBox(s.figureId, s.text, s.n, s.reading));
+  else $('source-body').replaceChildren(el('mark', null, s.text), ...(s.figures || []).map((f) => figureBox(f.figureId, f.caption, s.n, f.reading)));
+  // A figure found by its reading has chunks, but the text around them is only more of the reading.
+  $('source-more').hidden = Boolean(s.figureId) || !s.chunkIds || !s.chunkIds.length;
 }
 
 function closeSource() { $('source').hidden = true; shown = null; }
@@ -851,10 +858,10 @@ function where(p) { return p.pageFrom == null ? '' : p.pageFrom === p.pageTo ? `
 function passageBox(p, label) {
   const box = el('div', 'passage');
   box.appendChild(el('div', 'where', `${label || (p.n ? `[${p.n}] ` : '')}${p.docName}${where(p)}${p.heading ? ' - ' + p.heading : ''}${p.score != null ? ` · score ${Number(p.score).toFixed(3)}` : ''}`));
-  if (p.figureId) box.appendChild(figureBox(p.figureId, p.text));
+  if (p.figureId) box.appendChild(figureBox(p.figureId, p.text, null, p.reading));
   else {
     box.appendChild(document.createTextNode(p.text));
-    for (const f of p.figures || []) box.appendChild(figureBox(f.figureId, f.caption));
+    for (const f of p.figures || []) box.appendChild(figureBox(f.figureId, f.caption, null, f.reading));
   }
   return box;
 }
