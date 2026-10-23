@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { READER } from './fixtures.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -32,7 +33,7 @@ const lease = '# Lease\n\nThe tenancy runs for two years from January.\n\n## Ren
 function setup(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-answer-'));
   const ollama = fakeOllama();
-  const engine = Engine.open(path.join(root, 'data'), { makeEmbedder: (s) => new Embedder({ ...s, fetch: ollama.fetch, retries: 0 }), figureFloor: 0 });
+  const engine = Engine.open(path.join(root, 'data'), { makeEmbedder: (s) => new Embedder({ ...s, fetch: ollama.fetch, retries: 0 }), figureFloor: 0, readerOptions: READER });
   t.after(() => { engine.close(); fs.rmSync(root, { recursive: true, force: true }); });
   const file = (name, text) => { const f = path.join(root, name); fs.writeFileSync(f, text); return f; };
   const askWith = (behaviour, opts) => {

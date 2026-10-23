@@ -25,8 +25,14 @@ export class Store {
       getMeta: p('select value from meta where key = ?'),
       setMeta: p('insert into meta (key, value) values (?, ?) on conflict (key) do update set value = excluded.value'),
       docBySha: p('select * from documents where sha256 = ?'),
-      doc: p('select d.*, (select count(*) from figures f where f.doc_id = d.id) figures from documents d where d.id = ?'),
-      docs: p('select d.*, (select count(*) from figures f where f.doc_id = d.id) figures from documents d order by d.id'),
+      doc: p(`select d.*, (select count(*) from figures f where f.doc_id = d.id) figures,
+                (select count(*) from figures f where f.doc_id = d.id and f.read = 1) figures_read from documents d where d.id = ?`),
+      maxOrd: p('select coalesce(max(ord), -1) m from chunks where doc_id = ?'),
+      setFigureRead: p('update figures set read = 1 where id = ?'),
+      unreadDocs: p(`select distinct d.* from documents d join figures f on f.doc_id = d.id
+                     where d.status = 'ready' and coalesce(f.read, 0) = 0 order by d.id`),
+      docs: p(`select d.*, (select count(*) from figures f where f.doc_id = d.id) figures,
+                 (select count(*) from figures f where f.doc_id = d.id and f.read = 1) figures_read from documents d order by d.id`),
       addDoc: p(`insert into documents (sha256, name, ext, source_path, bytes, status, added_at, updated_at)
                  values (?, ?, ?, ?, ?, 'queued', ?, ?)`),
       setStatus: p('update documents set status = ?, error = ?, updated_at = ? where id = ?'),
@@ -169,6 +175,21 @@ export class Store {
   figureVectors(embeddedWith) { return this.q.figureVectorsFor.all(embeddedWith).map((r) => ({ id: r.id, vector: fromBlob(r.v) })); }
   docFigureVectors(docId) { return this.q.docFigureVectors.all(docId).map((r) => ({ id: r.id, vector: fromBlob(r.v) })); }
   figure(id) { const r = this.q.figure.get(id); return r ? figureRow(r) : null; }
+
+  /* Chunks added after a document's own - readings appended once read. */
+  appendChunks(docId, chunks) {
+    return transaction(this.db, () => {
+      let ord = this.q.maxOrd.get(docId).m;
+      return chunks.map((c) => Number(this.q.addChunk.run(
+        docId, ++ord, c.heading || '', c.text, c.lead || 0, c.pageFrom ?? null, c.pageTo ?? null, c.figureId ?? null, c.origin ?? null,
+      ).lastInsertRowid));
+    });
+  }
+
+  setFigureRead(id) { this.q.setFigureRead.run(id); }
+
+  /* Ready documents with a figure not read yet. */
+  unreadDocs() { return this.q.unreadDocs.all(); }
 
   /* A reading of an image by a model, or null. */
   reading(imageSha, model) {

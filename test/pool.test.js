@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { READER } from './fixtures.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -143,7 +144,7 @@ test('closeAll ends every open process', async (t) => {
 test('ask through the pool answers a follow-up from the process that answered the first question', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-pool-ask-'));
   const ollama = fakeOllama();
-  const engine = Engine.open(path.join(root, 'data'), { makeEmbedder: (s) => new Embedder({ ...s, fetch: ollama.fetch, retries: 0 }) });
+  const engine = Engine.open(path.join(root, 'data'), { makeEmbedder: (s) => new Embedder({ ...s, fetch: ollama.fetch, retries: 0 }), readerOptions: READER });
   const pool = new AgentPool({ open: ({ resume, model }) => new AgySession({ executable: process.execPath, prefixArgs: [FAKE, 'agy', 'echo'], resume, model, cwd: agentFolder(engine.dir) }) });
   t.after(async () => { await pool.closeAll(); engine.close(); fs.rmSync(root, { recursive: true, force: true }); });
   const f = path.join(root, 'lease.md');

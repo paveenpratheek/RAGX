@@ -103,6 +103,8 @@ export async function startServer({
   onStopped = null, manageOllama = true, ollamaOptions = {}, sampleResources = true,
 } = {}) {
   const engine = Engine.open(dataDir, engineOptions);
+  // Images are read with the same Claude the answers use; tests give it the stand-in.
+  if (agentOptions.claude && !engineOptions.readerOptions) engine.readerOptions = agentOptions.claude;
   const dir = engine.dir;
   const instance = crypto.randomBytes(8).toString('hex');
   let releaseLock;
@@ -156,7 +158,9 @@ export async function startServer({
   let current = null;
   const onProgress = ({ doc, phase, done, total }) => {
     emit({ type: 'ingest', docId: doc && doc.id, name: doc && doc.name, phase, done, total });
-    if (current && current.live) tracker.phase(current.live, phase === 'embedding' && total ? `embedding ${done}/${total}` : phase);
+    if (current && current.live) {
+      tracker.phase(current.live, phase === 'embedding' && total ? `embedding ${done}/${total}` : phase === 'reading' && total ? `reading figures ${done}/${total}` : phase);
+    }
   };
   const pump = async () => {
     if (current || !queue.length || stopping) return;
@@ -173,7 +177,8 @@ export async function startServer({
           run: i === 0 ? current.live : null, ms: t.ms ?? null, source: current.who.source, client: current.who.client, kind: current.who.kind,
           question: r.doc ? r.doc.name : r.name, timings: t, results: r.doc ? r.doc.chunks : 0,
           detail: { docId: r.doc && r.doc.id, status: r.status, pages: r.doc && r.doc.pages, chunks: r.doc && r.doc.chunks, rechunked: r.rechunked || 0,
-            figures: r.figures ?? (r.doc && r.doc.figures) ?? 0, figureError: r.figureError || undefined },
+            figures: r.figures ?? (r.doc && r.doc.figures) ?? 0, figureError: r.figureError || undefined,
+            read: r.read || undefined, unread: r.unread || undefined, readError: r.readError || undefined },
           error: r.status === 'error' ? r.error : null,
         });
       }
@@ -227,6 +232,7 @@ export async function startServer({
     agyModel: engine.store.getMeta('agy_model', '') || null,
     claudePath: engine.store.getMeta('claude_path', '') || null,
     agyPath: engine.store.getMeta('agy_path', '') || null,
+    ...engine.readingSettings(),
   });
 
   const inflight = new Set(); // AbortControllers of answers being streamed
@@ -436,7 +442,8 @@ export async function startServer({
     if (m('PUT', /^\/api\/settings$/)) {
       const b = await readJson(req);
       if (b.agent !== undefined && !AGENTS[b.agent]) throw new HttpError(400, 'bad-agent', `agent must be ${Object.keys(AGENTS).join(' or ')}.`);
-      const metaKeys = { agent: 'agent', claudeModel: 'claude_model', agyModel: 'agy_model', claudePath: 'claude_path', agyPath: 'agy_path' };
+      const metaKeys = { agent: 'agent', claudeModel: 'claude_model', agyModel: 'agy_model', claudePath: 'claude_path', agyPath: 'agy_path', readModel: 'read_model' };
+      if (b.readFigures !== undefined) engine.store.setMeta('read_figures', b.readFigures ? 'on' : 'off');
       for (const [k, meta] of Object.entries(metaKeys)) if (b[k] !== undefined) engine.store.setMeta(meta, b[k] ?? '');
       let stale = 0;
       if (b.embedModel !== undefined || b.queryPrefix !== undefined || b.docPrefix !== undefined) {
@@ -449,6 +456,20 @@ export async function startServer({
         ollama = { at: 0, value: null };
       }
       return json(200, { settings: settings(), stale });
+    }
+
+    /* Read figures now: a document's figures not read yet, or every
+     * document's, each as a job of its own (t-f0fbeabf6b). */
+    if ((p = m('POST', /^\/api\/docs\/(\d+)\/read$/))) {
+      const id = Number(p[0]);
+      const doc = engine.store.doc(id);
+      if (!doc) throw new HttpError(404, 'not-found', `No document with id ${id}.`);
+      return json(202, { queued: doc.name, position: enqueue(`Reading figures in ${doc.name}`, () => engine.readNow(id, { onProgress }), null, { ...whoIs(req), kind: 'read' }) });
+    }
+    if (m('POST', /^\/api\/read$/)) {
+      const docs = engine.store.unreadDocs();
+      for (const d of docs) enqueue(`Reading figures in ${d.name}`, () => engine.readNow(d.id, { onProgress }), null, { ...whoIs(req), kind: 'read' });
+      return json(202, { queued: docs.map((d) => d.name) });
     }
 
     if (m('POST', /^\/api\/reembed$/)) {

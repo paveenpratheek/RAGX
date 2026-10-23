@@ -17,10 +17,12 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { Store, STATUS } from './store.js';
 import { extract, ExtractError, SUPPORTED } from './extract/index.js';
-import { chunk, targetFor } from './chunk.js';
+import { chunk, chunkApart, targetFor } from './chunk.js';
 import { Embedder, EmbedError, readSettings, writeSettings, signature, chunkInput, defaultPrefixes } from './embed.js';
 import { VectorIndex } from './vectors.js';
 import { hybridSearch, FIGURE_FLOOR } from './search.js';
+import { readImage, readingBlocks, imageKey, READ_MODEL } from './reader.js';
+import { agentFolder, AgentError } from './agents/runner.js';
 
 export class EngineError extends Error {
   constructor(code, message) {
@@ -35,6 +37,10 @@ export class EngineError extends Error {
  * smaller, rather than one chunk being cut (t-364fe5c674) - a safety net, no
  * longer the usual path (t-f224d18ac0). */
 const FALLBACK = [1, 0.7, 0.5];
+
+/* At most this many images read with new calls in one go, per document; the
+ * rest wait for Read figures now (t-472dbed87a). */
+export const READ_CAP = 50;
 
 /* How many chunks are embedded and written per step: the most a Ctrl+C can
  * cost, and how often progress is reported. */
@@ -51,8 +57,11 @@ export class Engine {
 
   /* figureFloor: how close a question must come to a figure - measured for
    * embeddinggemma-2 (t-525cbbd9a7); tests with a stand-in model lower it. */
-  constructor(dir, { makeEmbedder = (s) => new Embedder(s), figureFloor = FIGURE_FLOOR } = {}) {
+  constructor(dir, { makeEmbedder = (s) => new Embedder(s), figureFloor = FIGURE_FLOOR, readerOptions = {}, readCap = READ_CAP } = {}) {
     this.figureFloor = figureFloor;
+    this.readCap = readCap;
+    // How Claude is run to read images; tests point it at a stand-in.
+    this.readerOptions = readerOptions;
     this.dir = dir;
     this.store = new Store(path.join(dir, 'rag.db'));
     // An index from before the size was kept per model measured it with the model set then.
@@ -83,6 +92,19 @@ export class Engine {
   }
 
   settings() { return readSettings(this.store); }
+
+  /* Reading images with Claude: on unless turned off, Haiku unless named
+   * (t-d2b967c01a). */
+  readingSettings() {
+    return { readFigures: this.store.getMeta('read_figures', 'on') !== 'off', readModel: this.store.getMeta('read_model', '') || READ_MODEL };
+  }
+
+  /* How chunks are sized for this document: from the model's window, less the
+   * "document > heading" line and the document prefix embedded with each. */
+  async chunkOptions(doc) {
+    const target = targetFor(await this.windowTokens());
+    return { target, reserve: (heading) => this.embedder.docPrefix.length + chunkInput(doc.name, heading, '').length };
+  }
 
   fileOf(doc) { return path.join(this.dir, 'files', doc.sha256 + doc.ext); }
 
@@ -142,7 +164,11 @@ export class Engine {
     return out;
   }
 
+  /* A new document's figures are read with new calls; a document rebuilt -
+   * re-indexed, re-embedded, resumed - takes only readings already kept, so
+   * the library is never read again without the user asking (t-072171490b). */
   async process(id, { onProgress = () => {}, label = 'added' } = {}) {
+    const readMode = label === 'added' ? 'call' : 'kept';
     let doc = this.store.doc(id);
     const sig = this.embedder.signature;
     const say = (phase, done, total) => onProgress({ doc, phase, done, total });
@@ -156,11 +182,12 @@ export class Engine {
       let built = { target: null, rechunked: 0 };
       if (canResume) await this.embedMissing(doc, say, stats);
       else built = await this.build(doc, say, stats);
+      built = { ...built, ...(await this.readFigures(doc, { mode: readMode, say, stats })) };
       this.store.setReady(id, sig);
       doc = this.store.doc(id);
       this.indexAdd(id);
       say('ready', doc.chunks, doc.chunks);
-      return { status: label, doc, ...built, timings: { ms: Date.now() - started, embedMs: stats.ms || 0, imageMs: stats.imageMs || 0, images: stats.images || 0, loadMs: stats.loadMs || 0 } };
+      return { status: label, doc, ...built, timings: timingsOf(stats, started) };
     } catch (e) {
       /* A document that cannot be read is in error for good. Ollama stopped,
        * or the model not pulled, leaves the status as it was, so the next
@@ -171,8 +198,77 @@ export class Engine {
       else this.store.setError(id, e.message);
       doc = this.store.doc(id);
       say('error');
-      return { status: 'error', doc, error: e.message, code: e.code, timings: { ms: Date.now() - started, embedMs: stats.ms || 0, imageMs: stats.imageMs || 0, images: stats.images || 0, loadMs: stats.loadMs || 0 } };
+      return { status: 'error', doc, error: e.message, code: e.code, timings: timingsOf(stats, started) };
     }
+  }
+
+  /* Read a ready document's figures that are not read yet, now: up to
+   * READ_CAP with new calls, the rest on the next press, even with reading
+   * off since the user asked (t-a800ea33b6). Only their readings are
+   * embedded - nothing else of the document is touched. */
+  async readNow(id, { onProgress = () => {} } = {}) {
+    let doc = this.store.doc(id);
+    if (!doc) throw new EngineError('not-found', `No document with id ${id}.`);
+    if (doc.status !== STATUS.ready) throw new EngineError('not-ready', `${doc.name} is not ready yet.`);
+    const say = (phase, done, total) => onProgress({ doc, phase, done, total });
+    const started = Date.now();
+    const stats = {};
+    const r = await this.readFigures(doc, { mode: 'call', say, stats, asked: true });
+    this.store.setReady(id, this.embedder.signature);
+    doc = this.store.doc(id);
+    this.indexAdd(id);
+    say('ready', doc.chunks, doc.chunks);
+    return { status: 'read', doc, ...r, timings: timingsOf(stats, started) };
+  }
+
+  /* A document's figures not read yet: each from its kept reading - used even
+   * with reading off, since it costs nothing (t-e5f5f1e696) - or, in 'call'
+   * mode with reading on, read now with Claude - at most READ_CAP of them. Readings are appended as chunks of their own and embedded. A
+   * failed reading - Claude not logged in, at its limit, timing out - stops
+   * the reading but never fails the document; its figures stay not read
+   * (t-64a996ef5a). Stop is honoured between readings. */
+  async readFigures(doc, { mode = 'kept', say = () => {}, stats = {}, asked = false } = {}) {
+    const todo = this.store.docFigures(doc.id).filter((f) => !f.read);
+    if (!todo.length) return { read: 0, unread: 0, readError: null };
+    const { readFigures: on, readModel } = this.readingSettings();
+    const calling = mode === 'call' && (on || asked);
+    const exe = this.store.getMeta('claude_path', '') || null;
+    const items = [];
+    let calls = 0;
+    let readError = null;
+    let done = 0;
+    say('reading', 0, todo.length);
+    for (const f of todo) {
+      if (this.stopRequested) throw new EngineError('stopped', 'Stopped; figures not read yet wait for Read figures now.');
+      const png = fs.readFileSync(path.join(this.dir, f.file));
+      let reading = this.store.reading(imageKey(png), readModel);
+      if (reading) stats.readCached = (stats.readCached || 0) + 1;
+      else if (calling && !readError && calls < this.readCap) {
+        try {
+          reading = await readImage(png, { store: this.store, model: readModel, cwd: agentFolder(this.dir), executable: exe, agentOptions: this.readerOptions, stats });
+          calls++;
+        } catch (e) {
+          if (!(e instanceof AgentError)) throw e;
+          readError = e.message;
+        }
+      }
+      if (reading) {
+        const scan = f.kind === 'page';
+        const heading = scan ? `Scanned page ${f.page}` : `${f.caption || (f.page ? `Figure on page ${f.page}` : 'Figure')} (read from the image)`;
+        const blocks = readingBlocks(reading, { page: f.page, scan });
+        if (blocks.length) items.push({ heading: f.heading && !scan ? `${f.heading} > ${heading}` : heading, figureId: f.id, blocks });
+        this.store.setFigureRead(f.id);
+        done++;
+      }
+      say('reading', done, todo.length);
+    }
+    if (items.length) {
+      const chunks = chunkApart(items, await this.chunkOptions(doc));
+      this.store.appendChunks(doc.id, chunks);
+      this.store.setEmbedding(doc.id, this.embedder.signature);
+      await this.embedMissing(doc, say, stats);
+    }
+    return { read: done, unread: todo.length - done, readError };
   }
 
   /* The model's context length, asked of Ollama once per model. */
@@ -196,10 +292,9 @@ export class Engine {
       await this.embedMissing(doc, say, stats);
       return { target: null, rechunked: 0, ...found };
     }
-    const first = targetFor(await this.windowTokens());
     // The "document > heading" line and the model's document prefix are
     // embedded with every chunk, so they come out of the same budget (t-2717ac3c99).
-    const reserve = (heading) => this.embedder.docPrefix.length + chunkInput(doc.name, heading, '').length;
+    const { target: first, reserve } = await this.chunkOptions(doc);
     let lastError;
     for (const [tries, scale] of FALLBACK.entries()) {
       const target = Math.round(first * scale);
@@ -377,4 +472,12 @@ export class Engine {
       dir: this.dir,
     };
   }
+}
+
+/* A run's timings, for the result and the tracker. */
+function timingsOf(stats, started) {
+  return {
+    ms: Date.now() - started, embedMs: stats.ms || 0, imageMs: stats.imageMs || 0, images: stats.images || 0, loadMs: stats.loadMs || 0,
+    readMs: stats.readMs || 0, reads: stats.reads || 0, readCached: stats.readCached || 0,
+  };
 }

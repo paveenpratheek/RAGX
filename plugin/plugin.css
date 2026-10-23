@@ -264,3 +264,8 @@ progress { width: 120px; height: 6px; vertical-align: middle; accent-color: var(
 .lightbox figcaption { color: #fff; font-size: 13px; max-width: 900px; text-align: center; }
 .lightbox .link { color: #cfe0ff; }
 .lightbox #lightbox-close { position: absolute; top: 12px; right: 16px; color: #fff; font-size: 22px; }
+
+/* reading images */
+.timebar .read { background: color-mix(in srgb, var(--accent) 55%, var(--yellow)); }
+label.check { display: flex; align-items: center; gap: 8px; }
+#unread { margin: 0; }

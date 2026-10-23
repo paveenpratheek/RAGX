@@ -181,9 +181,13 @@ create table if not exists samples_min (
  * source's figure_id is the figure it is; figures, as JSON, the ones beside
  * a text source (t-0b97deb139). A chunk's origin is null for the document's
  * own words and 'read' for text Claude read from an image, with figure_id
- * naming the figure or scanned page it was read from (t-7febde7b9f). */
+ * naming the figure or scanned page it was read from (t-7febde7b9f). A
+ * figure's read is 1 once its reading is in the document's chunks; a call's
+ * read_ms, reads and read_cached are the time spent reading images, the
+ * readings made and those taken from the kept ones. */
 const COLUMNS = [['calls', 'image_ms', 'integer'], ['sources', 'figure_id', 'integer'], ['sources', 'figures', 'text'],
-  ['chunks', 'figure_id', 'integer'], ['chunks', 'origin', 'text']];
+  ['chunks', 'figure_id', 'integer'], ['chunks', 'origin', 'text'],
+  ['figures', 'read', 'integer'], ['calls', 'read_ms', 'integer'], ['calls', 'reads', 'integer'], ['calls', 'read_cached', 'integer']];
 
 /* `lead` is how many characters at the start of a chunk repeat the end of the
  * one before it - the overlap. Search joins neighbouring chunks by dropping

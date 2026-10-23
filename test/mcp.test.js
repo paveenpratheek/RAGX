@@ -1,6 +1,7 @@
 /* The RAGX tool, driven the way Claude Code drives an MCP server: a
  * child process, JSON-RPC one message a line on stdin and stdout. */
 import { test } from 'node:test';
+import { READER } from './fixtures.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -52,7 +53,7 @@ async function engine(t, dir) {
   const ollama = fakeOllama();
   const s = await startServer({
     dataDir: path.join(dir, 'data'), port: 0, runtimeFile: path.join(dir, 'runtime.json'),
-    engineOptions: { makeEmbedder: (cfg) => new Embedder({ ...cfg, fetch: ollama.fetch, retries: 0 }), figureFloor: 0 },
+    engineOptions: { makeEmbedder: (cfg) => new Embedder({ ...cfg, fetch: ollama.fetch, retries: 0 }), figureFloor: 0, readerOptions: READER },
     signals: false, log: () => {}, manageOllama: false, sampleResources: false,
   });
   t.after(() => s.stop());

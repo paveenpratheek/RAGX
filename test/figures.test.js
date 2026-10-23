@@ -12,7 +12,7 @@ import { CAPTION, isFigureSize } from '../engine/lib/extract/figures.js';
 import { Engine } from '../engine/lib/engine.js';
 import { Embedder } from '../engine/lib/embed.js';
 import { fakeOllama } from './ollama-fake.js';
-import { makeDocx, makePdf, w, chartXml, draw, barChartPage } from './fixtures.js';
+import { makeDocx, makePdf, w, chartXml, draw, barChartPage, READER } from './fixtures.js';
 
 function png(width, height, colour = '#3a7bd5') {
   const c = createCanvas(width, height);
@@ -144,12 +144,14 @@ test('an image file is one figure and no text; one that cannot be decoded is ref
 test('the engine keeps figures as files with their rows, replaces them on re-index and removes them with the document', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-figures-'));
   const o = fakeOllama();
-  const e = Engine.open(path.join(root, 'data'), { makeEmbedder: (s) => new Embedder({ ...s, fetch: o.fetch, retries: 0 }) });
+  const e = Engine.open(path.join(root, 'data'), { makeEmbedder: (s) => new Embedder({ ...s, fetch: o.fetch, retries: 0 }), readerOptions: READER });
   t.after(() => { e.close(); fs.rmSync(root, { recursive: true, force: true }); });
   const file = (name, data) => { const f = path.join(root, name); fs.writeFileSync(f, data); return f; };
 
   const img = await e.ingest(file('diagram.png', png(640, 480)));
-  assert.deepEqual([img.status, img.doc.status, img.doc.chunks, img.figures], ['added', 'ready', 0, 1], 'an image is ready with no text');
+  // An image has no text of its own; its one chunk is its reading (t-7febde7b9f).
+  assert.deepEqual([img.status, img.doc.status, img.doc.chunks, img.figures, img.read], ['added', 'ready', 1, 1, 1]);
+  assert.equal(e.store.chunk(e.store.docChunkIds(img.doc.id)[0]).origin, 'read');
   const pdf = await e.ingest(file('costs.pdf', makePdf([[{ text: 'Costs', size: 20, y: 760 }, ...barChartPage({ top: 700 })]])));
   assert.equal(pdf.figures, 1);
   const [fig] = e.store.docFigures(pdf.doc.id);
@@ -176,7 +178,7 @@ test('the engine keeps figures as files with their rows, replaces them on re-ind
 test('figures are embedded after the text when the model can see images, and wait for one when it cannot', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-figvec-'));
   const o = fakeOllama({ vision: ['embeddinggemma-2:440m'] });
-  const e = Engine.open(path.join(root, 'data'), { makeEmbedder: (s) => new Embedder({ ...s, fetch: o.fetch, retries: 0 }) });
+  const e = Engine.open(path.join(root, 'data'), { makeEmbedder: (s) => new Embedder({ ...s, fetch: o.fetch, retries: 0 }), readerOptions: READER });
   t.after(() => { e.close(); fs.rmSync(root, { recursive: true, force: true }); });
   const file = (name, data) => { const f = path.join(root, name); fs.writeFileSync(f, data); return f; };
   const phases = [];
@@ -192,13 +194,14 @@ test('figures are embedded after the text when the model can see images, and wai
   assert.equal(r.status, 'reembedded', r.error);
   assert.equal(e.store.totals().figure_vectors, 1);
   assert.equal(o.images, 1);
-  assert.equal(phases.at(-1), `${r.doc.chunks + 1}/${r.doc.chunks + 1}`, 'progress counts chunks and figures together');
+  const own = e.store.docChunkIds(r.doc.id).map((id) => e.store.chunk(id)).filter((c) => !c.origin).length;
+  assert.ok(phases.includes(`${own + 1}/${own + 1}`), `progress counts the document's chunks and its figure together: ${phases}`);
   assert.ok(r.timings.images === 1 && r.timings.imageMs >= 0);
   assert.equal(e.store.figureVectors(e.embedder.signature).length, 1);
 
-  // An image file is embedded on its own.
+  // An image file is embedded on its own, with its reading as its one chunk.
   const img = await e.ingest(file('photo.png', png(500, 400)));
-  assert.deepEqual([img.doc.chunks, e.store.docFigureVectors(img.doc.id).length], [0, 1]);
+  assert.deepEqual([img.doc.chunks, e.store.docFigureVectors(img.doc.id).length], [1, 1]);
 });
 
 /* Step 3: search reaches figures, and a figure travels with its passage (t-d3dd407413). */
@@ -206,7 +209,7 @@ function figureEngine(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-figsearch-'));
   const o = fakeOllama();
   // The stand-in model's scores are not gemma's, so any figure it reaches counts.
-  const e = Engine.open(path.join(root, 'data'), { makeEmbedder: (s) => new Embedder({ ...s, fetch: o.fetch, retries: 0 }), figureFloor: 0 });
+  const e = Engine.open(path.join(root, 'data'), { makeEmbedder: (s) => new Embedder({ ...s, fetch: o.fetch, retries: 0 }), figureFloor: 0, readerOptions: READER });
   t.after(() => { e.close(); fs.rmSync(root, { recursive: true, force: true }); });
   const file = (name, data) => { const f = path.join(root, name); fs.writeFileSync(f, data); return f; };
   return { e, file };
@@ -223,7 +226,8 @@ test('a figure the question does not reach is not shown, and a passage carries a
   ], { parts: { rId1: { name: 'media/a.png', data: png(300, 300, '#a00') }, rId2: { name: 'media/b.png', data: png(300, 300, '#0a0') }, rId3: { name: 'media/c.png', data: png(300, 300, '#00a') } } });
   await e.ingest(file('antenna.docx', docx));
   const all = (await e.search('radiation pattern')).passages;
-  const text = all.filter((p) => !p.figureId);
+  // The author's passage; the figures' readings come back too, as their own passages.
+  const text = all.filter((p) => !p.figureId && !p.readFrom);
   assert.equal(text.length, 1);
   assert.equal(text[0].figures.length, 2, 'the two the question reaches best, not all three');
   assert.equal(all.filter((p) => p.figureId).length, 1, 'the third, reached too, is a result of its own');

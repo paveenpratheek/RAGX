@@ -1,6 +1,17 @@
 /* Documents built by code, so the tests carry no binary fixtures and each
  * test shows exactly what is in the file it reads (t-0b8379132e). */
 import zlib from 'node:zlib';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+/* How test engines read images: the stand-in agent's read behaviour, so no
+ * test ever reaches the real Claude on the user's subscription - every test
+ * engine is given it (t-ea1f74ebb4). */
+export const READER = {
+  executable: process.execPath,
+  prefixArgs: [path.join(path.dirname(fileURLToPath(import.meta.url)), 'fake-agent.mjs'), 'claude', 'read'],
+  timeoutMs: 15_000,
+};
 
 export function makeZip(entries) {
   const locals = [];
@@ -144,14 +155,15 @@ export const draw = {
   // What real PDFs open with: a white page-sized background and a clip, neither of them a mark.
   background: () => ({ raw: 'q 1 1 1 rg 0 0 612 792 re f Q 0 0 612 792 re W n' }),
   // A picture over the whole page, as a scanner writes one: a 2x2 grey inline image scaled up.
-  scan: () => ({ raw: `q 612 0 0 792 0 0 cm BI /W 2 /H 2 /CS /RGB /BPC 8 ID ${'\x80\x80\x80'.repeat(4)} EI Q` }),
+  // shade (0-255) makes pages differ, as real scans do.
+  scan: (shade = 0x80) => ({ raw: `q 612 0 0 792 0 0 cm BI /W 2 /H 2 /CS /RGB /BPC 8 ID ${String.fromCharCode(shade).repeat(12)} EI Q` }),
 };
 
 /* A bar chart drawn as a chart tool exports it: axis lines, bars and labels,
  * with its caption below - at the top of a US Letter page. */
-export function barChartPage({ caption = 'Figure 1 - Costs by region in 2024.', top = 720 } = {}) {
+export function barChartPage({ caption = 'Figure 1 - Costs by region in 2024.', top = 720, title = 'Costs by region' } = {}) {
   // Labels sit close to their bars and the title close above, as chart tools set them.
-  const lines = [draw.background(), { text: 'Costs by region', size: 12, x: 150, y: top - 12 }];
+  const lines = [draw.background(), { text: title, size: 12, x: 150, y: top - 12 }];
   lines.push(draw.line(150, top - 160, 150, top - 20), draw.line(150, top - 160, 450, top - 160));
   [['Asia', 120], ['Europe', 90], ['Africa', 60]].forEach(([name, len], i) => {
     const y = top - 50 - i * 40;

@@ -22,6 +22,9 @@ const SETTINGS = {
   'agy-model': { meta: 'agy_model' },
   'claude-path': { meta: 'claude_path' },
   'agy-path': { meta: 'agy_path' },
+  // Reading figures and scanned pages with Claude, on unless turned off (t-d2b967c01a).
+  'read-figures': { meta: 'read_figures', check: (v) => (v === 'on' || v === 'off' ? null : 'read-figures must be on or off') },
+  'read-model': { meta: 'read_model' },
 };
 
 const USAGE = `usage: node engine/cli.js --data-dir <folder> <command>
@@ -42,8 +45,9 @@ const USAGE = `usage: node engine/cli.js --data-dir <folder> <command>
   config set-model <name> [--query-prefix <text>] [--doc-prefix <text>]
                           use another Ollama embedding model (then: reembed)
   config set <key> <value>  agent (claude|agy), claude-model, agy-model,
-                          claude-path, agy-path
-  reembed                 rebuild every vector with the current model`;
+                          claude-path, agy-path, read-figures (on|off), read-model
+  reembed                 rebuild every vector with the current model
+  read <id>|all           read figures not read yet with Claude (50 at a time)`;
 
 function parse(argv) {
   const opts = {};
@@ -87,7 +91,9 @@ function report(r) {
     const again = r.rechunked ? ` - chunked again at ${r.target} characters, too dense for the model` : '';
     const figures = r.figures ? `, ${r.figures} figure${r.figures === 1 ? '' : 's'}` : '';
     console.log(`✓ ${name}: ${r.status}, ${r.doc.chunks} chunks${figures}${pages} (id ${r.doc.id})${again}`);
-    if (r.figureError) console.log(`  figures could not be read: ${r.figureError}`);
+    if (r.figureError) console.log(`  figures could not be found: ${r.figureError}`);
+    if (r.read || r.unread) console.log(`  figures read: ${r.read}${r.unread ? `, ${r.unread} not read yet - "read ${r.doc.id}" reads them` : ''}`);
+    if (r.readError) console.log(`  reading stopped: ${r.readError}`);
   }
 }
 
@@ -262,6 +268,14 @@ async function main(argv) {
         console.log(`agent         ${m('agent', 'claude')}\nclaude model  ${m('claude_model', AGENTS.claude.DEFAULT_MODEL)}\nagy model     ${m('agy_model', "agy's default")}`);
         console.log(`claude path   ${m('claude_path', 'from PATH')}\nagy path      ${m('agy_path', 'from PATH')}`);
         return 0;
+      }
+      case 'read': {
+        const ids = rest[0] === 'all' ? engine.store.unreadDocs().map((d) => d.id) : rest.map(Number).filter(Number.isInteger);
+        if (!ids.length) throw new UsageError(rest[0] === 'all' ? 'Every figure is read already.' : 'read takes a document id or all.');
+        const done = [];
+        for (const id of ids) done.push(await engine.readNow(id, { onProgress: progress() }));
+        done.forEach(report);
+        return done.some((r) => r.readError) ? 1 : 0;
       }
       case 'reembed': {
         const done = await engine.reembed({ onProgress: progress() });

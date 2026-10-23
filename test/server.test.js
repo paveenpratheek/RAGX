@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { READER } from './fixtures.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,7 +21,7 @@ async function serve(t, { claude = 'answer', agy = 'echo', dir = null, poolOptio
   const ollama = fakeOllama();
   const s = await startServer({
     dataDir: path.join(root, 'data'), port: 0, runtimeFile: path.join(root, 'plugin', 'runtime.json'),
-    engineOptions: { makeEmbedder: (cfg) => new Embedder({ ...cfg, fetch: ollama.fetch, retries: 0 }) },
+    engineOptions: { makeEmbedder: (cfg) => new Embedder({ ...cfg, fetch: ollama.fetch, retries: 0 }), readerOptions: READER },
     agentOptions: {
       claude: { executable: process.execPath, prefixArgs: [FAKE, 'claude', claude], timeoutMs: 10_000 },
       agy: { executable: process.execPath, prefixArgs: [FAKE, 'agy', agy], timeoutMs: 10_000 },
@@ -261,7 +262,7 @@ test('serving starts Ollama when none is running, and stopping ends the one it s
   const ollama = fakeOllama();
   const s = await startServer({
     dataDir: path.join(root, 'data'), port: 0, runtimeFile: path.join(root, 'plugin', 'runtime.json'),
-    engineOptions: { makeEmbedder: (cfg) => new Embedder({ ...cfg, fetch: ollama.fetch, retries: 0 }) },
+    engineOptions: { makeEmbedder: (cfg) => new Embedder({ ...cfg, fetch: ollama.fetch, retries: 0 }), readerOptions: READER },
     ollamaOptions: { host, executable: process.execPath, prefixArgs: [path.join(path.dirname(FAKE), 'fake-ollama.mjs')], startTimeoutMs: 8000 },
     signals: false, log: () => {},
   });
@@ -368,4 +369,35 @@ test('a figure is served as its details and its PNG, and an agent fetching one i
   assert.deepEqual(s.tracker.calls({ kind: 'figure' }).map((c) => c.source), ['agent'], 'the page showing a figure is not a call');
   assert.equal((await call('/api/figures/999999/image')).status, 404);
   assert.equal((await call(`/api/figures/${id}/image`, { token: 'wrong' })).status, 401);
+});
+
+test('reading over HTTP: an upload is read, reading can be turned off, and Read figures now reads what waits', async (t) => {
+  const { makePdf, barChartPage } = await import('./fixtures.js');
+  const { s, call } = await serve(t);
+  const upload = async (name, caption, title) => {
+    const ready = waitFor(call, (e) => e.type === 'doc' && e.doc.name === name);
+    await ready.connected;
+    await call('/api/docs', { method: 'POST', raw: true, body: makePdf([[{ text: 'Costs', size: 20, y: 760 }, ...barChartPage({ top: 700, caption, title })]]), headers: { 'x-file-name': name } });
+    return (await ready).doc;
+  };
+  const a = await upload('a.pdf', 'Figure 1 - Costs by region in 2024.');
+  assert.deepEqual([a.figures, a.figures_read], [1, 1]);
+  const ingest = s.tracker.calls({ kind: 'ingest' })[0];
+  assert.equal(ingest.reads, 1);
+  assert.ok(ingest.read_ms > 0);
+
+  const off = await (await call('/api/settings', { method: 'PUT', body: { readFigures: false, readModel: 'haiku' } })).json();
+  assert.deepEqual([off.settings.readFigures, off.settings.readModel], [false, 'haiku']);
+  // A different chart: the same image would come from its kept reading, which costs nothing.
+  const b = await upload('b.pdf', 'Figure 2 - Costs by region in 2025.', 'Costs in 2025');
+  assert.deepEqual([b.figures, b.figures_read], [1, 0], 'not read with reading off');
+
+  const read = waitFor(call, (e) => e.type === 'doc' && e.status === 'read');
+  await read.connected;
+  const r = await (await call('/api/read', { method: 'POST' })).json();
+  assert.deepEqual(r.queued, ['b.pdf']);
+  assert.equal((await read).doc.figures_read, 1);
+  await new Promise((res) => setTimeout(res, 100));
+  assert.deepEqual(s.tracker.calls({ kind: 'read' }).map((c) => [c.question, c.reads]), [['b.pdf', 1]]);
+  assert.equal((await call('/api/docs/999/read', { method: 'POST' })).status, 404);
 });

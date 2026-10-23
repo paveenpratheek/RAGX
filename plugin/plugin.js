@@ -254,7 +254,8 @@ function statusCell(d) {
     if (p.phase === 'embedding' && p.total) {
       td.appendChild(el('span', 'state', `embedding ${p.done}/${p.total} `));
       const bar = el('progress'); bar.max = p.total; bar.value = p.done; td.appendChild(bar);
-    } else td.appendChild(el('span', 'state', p.phase === 'extracting' ? 'reading…' : `${p.phase}…`));
+    } else if (p.phase === 'reading' && p.total) td.appendChild(el('span', 'state', `Claude reading figures ${p.done}/${p.total}`));
+    else td.appendChild(el('span', 'state', p.phase === 'extracting' ? 'reading…' : `${p.phase}…`));
     return td;
   }
   td.appendChild(el('span', 'state ' + d.status, d.status));
@@ -267,8 +268,13 @@ function docRow(d) {
   tr.dataset.id = String(d.id);
   const name = el('td', 'name', d.name);
   if (d.source_path) name.title = d.source_path;
-  tr.append(name, statusCell(d), el('td', 'num', String(d.chunks || '')), el('td', 'num', d.figures ? String(d.figures) : ''), el('td', 'num', d.pages ? String(d.pages) : ''));
+  // Figures, and how many Claude has read: "14/16 read" (t-79cb1dcd37).
+  const unread = (d.figures || 0) - (d.figures_read || 0);
+  const figs = el('td', 'num', d.figures ? (unread ? `${d.figures_read || 0}/${d.figures} read` : String(d.figures)) : '');
+  if (unread) figs.title = `${unread} figure${unread === 1 ? '' : 's'} not read by Claude yet`;
+  tr.append(name, statusCell(d), el('td', 'num', String(d.chunks || '')), figs, el('td', 'num', d.pages ? String(d.pages) : ''));
   const acts = el('td', 'acts');
+  if (unread && d.status === 'ready') { const rd = el('button', null, 'Read figures'); rd.dataset.act = 'read'; acts.appendChild(rd); }
   const re = el('button', null, 'Re-index'); re.dataset.act = 'reindex';
   const rm = el('button', 'danger', 'Remove'); rm.dataset.act = 'remove';
   acts.append(re, rm);
@@ -276,10 +282,24 @@ function docRow(d) {
   return tr;
 }
 
+/* Under the drop zone: what reading images means, while it is on; and when
+ * any document has figures not read yet, a bar to read them (t-d2b967c01a,
+ * t-f0fbeabf6b). */
+function renderReading() {
+  const on = !S.state || !S.state.settings || S.state.settings.readFigures !== false;
+  $('read-notice').textContent = on
+    ? 'Figures and scanned pages in new documents are read by Claude - each image is sent to Anthropic once. Turn this off in Settings.'
+    : 'Claude does not read figures in new documents; turn it on in Settings.';
+  const unread = [...S.docs.values()].reduce((n, d) => n + Math.max(0, (d.figures || 0) - (d.figures_read || 0)), 0);
+  $('unread').hidden = !unread;
+  $('unread-msg').textContent = `${unread} figure${unread === 1 ? ' is' : 's are'} not read by Claude yet, so the words and numbers in ${unread === 1 ? 'it' : 'them'} cannot be searched.`;
+}
+
 function renderDocs() {
   const body = $('doc-list');
   body.replaceChildren(...[...S.docs.values()].sort((a, b) => b.id - a.id).map(docRow));
   $('docs-empty').hidden = S.docs.size > 0;
+  renderReading();
 }
 
 function renderDoc(id) {
@@ -588,7 +608,10 @@ function renderSettings() {
     f.embedModel.value = s.model || '';
     f.queryPrefix.value = s.queryPrefix || '';
     f.docPrefix.value = s.docPrefix || '';
+    f.readFigures.checked = s.readFigures !== false;
+    f.readModel.value = s.readModel || '';
   }
+  renderReading();
   const facts = $('engine-facts');
   const row = (k, v) => [el('dt', null, k), el('dd', null, v)];
   const agent = (name) => (st.agents[name].found ? st.agents[name].path : st.agents[name].error);
@@ -611,6 +634,7 @@ async function saveSettings(ev) {
   const body = {
     claudeModel: f.claudeModel.value, agyModel: f.agyModel.value.trim(),
     claudePath: f.claudePath.value.trim(), agyPath: f.agyPath.value.trim(),
+    readFigures: f.readFigures.checked, readModel: f.readModel.value.trim(),
   };
   const emb = { embedModel: f.embedModel.value.trim(), queryPrefix: f.queryPrefix.value, docPrefix: f.docPrefix.value };
   if (emb.embedModel !== s.model || emb.queryPrefix !== s.queryPrefix || emb.docPrefix !== s.docPrefix) Object.assign(body, emb);
@@ -629,7 +653,7 @@ async function saveSettings(ev) {
 
 const RANGES = { hour: 3600e3, day: 86400e3, week: 7 * 86400e3, month: 30 * 86400e3 };
 const WHO = { you: 'You', agent: 'Agent', cli: 'Command line', other: 'Other' };
-const KIND = { search: 'Search', ask: 'Ask', passage: 'Passage', figure: 'Figure', documents: 'Documents', ingest: 'Ingest', reindex: 'Re-index', reembed: 'Re-embed', resume: 'Resume' };
+const KIND = { search: 'Search', ask: 'Ask', passage: 'Passage', figure: 'Figure', documents: 'Documents', ingest: 'Ingest', reindex: 'Re-index', reembed: 'Re-embed', resume: 'Resume', read: 'Read figures' };
 
 function fmtMs(ms) {
   if (ms == null) return '-';
@@ -659,12 +683,12 @@ function timebar(c) {
   const total = c.ms || 0;
   if (!total) return bar;
   const load = c.load_ms || 0;
-  const parts = [['load', load], ['embed', Math.max((c.embed_ms || 0) - load, 0)], ['image', c.image_ms || 0], ['search', c.search_ms || 0], ['agent', c.agent_ms || 0]];
+  const parts = [['load', load], ['embed', Math.max((c.embed_ms || 0) - load, 0)], ['image', c.image_ms || 0], ['read', c.read_ms || 0], ['search', c.search_ms || 0], ['agent', c.agent_ms || 0]];
   for (const [cls, ms] of parts) {
     if (!ms) continue;
     const i = el('i', cls);
     i.style.width = `${Math.min(100, (ms / total) * 100)}%`;
-    i.title = `${{ load: 'loading the model', embed: 'embedding text', image: 'embedding figures', search: 'searching', agent: 'the agent answering' }[cls]}: ${fmtMs(ms)}`;
+    i.title = `${{ load: 'loading the model', embed: 'embedding text', image: 'embedding figures', read: 'Claude reading figures', search: 'searching', agent: 'the agent answering' }[cls]}: ${fmtMs(ms)}`;
     bar.appendChild(i);
   }
   return bar;
@@ -715,6 +739,7 @@ function renderCards(sum) {
     stat('Calls', String(calls), split || 'none yet'),
     stat('Time per call', calls ? fmtMs(avg) : '-', calls ? `slowest ${fmtMs(slowest)}` : null),
     stat('Embedding', fmtMs(sum.embedMs + (sum.imageMs || 0)), [sum.imageMs ? `${fmtMs(sum.imageMs)} of it figures` : '', sum.loadMs ? `${fmtMs(sum.loadMs)} loading the model` : 'model was already loaded'].filter(Boolean).join(' · ')),
+    stat('Figures read', String(sum.reads || 0), sum.reads || sum.readCached ? `${fmtMs(sum.readMs || 0)} reading${sum.readCached ? ` · ${sum.readCached} from kept readings` : ''}` : 'by Claude, when documents are added'),
     stat('Model loads', String(sum.loads), `loaded for ${loaded >= 3600 ? (loaded / 3600).toFixed(1) + ' h' : Math.round(loaded / 60) + ' min'}`),
     stat('GPU now', now && now.gpuUtil != null ? `${now.gpuUtil}%` : '-',
       now && now.vramUsed != null ? `VRAM ${now.vramUsed} / ${now.vramTotal} MiB` : 'no NVIDIA GPU found'),
@@ -851,6 +876,8 @@ async function openCall(id) {
   row('Total', fmtMs(c.ms));
   row('Embedding', c.embed_ms != null ? fmtMs(c.embed_ms) : null);
   row('Embedding figures', c.image_ms ? fmtMs(c.image_ms) : null);
+  row('Reading figures', c.read_ms || c.reads || c.read_cached
+    ? `${c.reads || 0} read by Claude${c.read_cached ? `, ${c.read_cached} from kept readings` : ''}${c.read_ms ? ` - ${fmtMs(c.read_ms)}` : ''}` : null);
   row('Figures', c.detail && c.detail.figures ? String(c.detail.figures) : null);
   row('Loading the model', c.load_ms ? fmtMs(c.load_ms) : null);
   row('Search', c.search_ms != null ? fmtMs(c.search_ms) : null);
@@ -1066,6 +1093,9 @@ function wire() {
     if (!p) return;
     try { await engine.json('POST', '/api/docs/path', { body: { path: p } }); $('path').value = ''; toast('Queued.'); } catch (err) { toast(err.message, true); }
   });
+  $('read-all').addEventListener('click', async () => {
+    try { const r = await engine.json('POST', '/api/read'); toast(`Reading figures in ${r.queued.length} document${r.queued.length === 1 ? '' : 's'} - up to 50 each.`); } catch (err) { toast(err.message, true); }
+  });
   $('doc-list').addEventListener('click', async (e) => {
     const b = e.target.closest('button[data-act]');
     if (!b) return;
@@ -1074,6 +1104,8 @@ function wire() {
     if (b.dataset.act === 'remove') {
       if (!confirm(`Remove ${d.name} from the library? Its passages stop being found; past answers keep the text they cited.`)) return;
       try { await engine.json('DELETE', `/api/docs/${id}`); S.docs.delete(id); renderDocs(); } catch (err) { toast(err.message, true); }
+    } else if (b.dataset.act === 'read') {
+      try { await engine.json('POST', `/api/docs/${id}/read`); toast(`Reading the figures in ${d.name} - up to 50 at a time.`); } catch (err) { toast(err.message, true); }
     } else if (b.dataset.act === 'reindex') {
       try { await engine.json('POST', `/api/docs/${id}/reindex`); toast(`${d.name} is queued to be read again.`); } catch (err) { toast(err.message, true); }
     }

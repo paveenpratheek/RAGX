@@ -6,14 +6,14 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { Engine } from '../engine/lib/engine.js';
 import { Embedder, OLLAMA, DEFAULT_MODEL } from '../engine/lib/embed.js';
-import { makeDocx, makePdf, w } from './fixtures.js';
+import { makeDocx, makePdf, w, READER } from './fixtures.js';
 import { fakeOllama } from './ollama-fake.js';
 
 function setup(t, ollama = fakeOllama()) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-engine-'));
   const docs = path.join(root, "my docs (Paveen's)");
   fs.mkdirSync(docs);
-  const open = (o = ollama) => Engine.open(path.join(root, 'data'), { makeEmbedder: (s) => new Embedder({ ...s, fetch: o.fetch, retries: 0 }) });
+  const open = (o = ollama) => Engine.open(path.join(root, 'data'), { makeEmbedder: (s) => new Embedder({ ...s, fetch: o.fetch, retries: 0 }), readerOptions: READER });
   const engines = [];
   const engine = (o) => { const e = open(o); engines.push(e); return e; };
   const write = (name, data) => { const f = path.join(docs, name); fs.writeFileSync(f, data); return f; };
@@ -232,7 +232,7 @@ const hasNomic = await fetch(OLLAMA + '/api/show', { method: 'POST', body: JSON.
 
 test('live: a question worded differently from the document finds it by meaning', { skip: !hasNomic && 'Ollama or nomic is not available' }, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-live-'));
-  const e = Engine.open(path.join(root, 'data'));
+  const e = Engine.open(path.join(root, 'data'), { readerOptions: READER });
   t.after(() => { e.close(); fs.rmSync(root, { recursive: true, force: true }); });
   const add = (name, text) => { const f = path.join(root, name); fs.writeFileSync(f, text); return e.ingest(f); };
   await add('leave.txt', 'Employees are entitled to twenty days of paid annual leave.');

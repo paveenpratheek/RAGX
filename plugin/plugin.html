@@ -114,6 +114,12 @@
       <input id="path" placeholder="…or the full path of a file on this machine, e.g. E:\Docs\report.pdf" spellcheck="false">
       <button type="submit">Add</button>
     </form>
+    <p class="note" id="read-notice"></p>
+    <div class="notice" id="unread" hidden>
+      <span id="unread-msg"></span>
+      <span class="grow"></span>
+      <button type="button" id="read-all">Read figures now</button>
+    </div>
     <div class="note" id="queue"></div>
     <table class="docs">
       <thead><tr><th>Document</th><th>Status</th><th class="num">Chunks</th><th class="num">Figures</th><th class="num">Pages</th><th></th></tr></thead>
@@ -134,6 +140,10 @@
       <label>Query prefix <input name="queryPrefix" placeholder="none" spellcheck="false"></label>
       <label>Document prefix <input name="docPrefix" placeholder="none" spellcheck="false"></label>
       <p class="note">Changing the model or the document prefix means every document must be embedded again before you can ask.</p>
+      <h3>Images</h3>
+      <label class="check"><input type="checkbox" name="readFigures"> Read figures and scanned pages with Claude</label>
+      <label>Reader model <input name="readModel" placeholder="haiku" spellcheck="false"></label>
+      <p class="note">Each figure and scanned page of a new document is sent to Anthropic once, through your Claude subscription, and Claude writes out its text and what it shows, so the words and numbers in images can be searched. Readings are kept, so an image is never read twice. Documents already in the library are read only when you press Read figures now, at most 50 images at a time.</p>
       <div class="row end">
         <span class="note" id="settings-msg"></span>
         <button type="button" id="reembed" hidden>Re-embed now</button>
