@@ -135,7 +135,7 @@ test('changing the model blocks search until every document is re-embedded', asy
   assert.equal(e.settings().model, DEFAULT_MODEL, 'a model Ollama does not have never becomes the setting');
 
   const info = await e.setModel({ model: 'other' });
-  assert.deepEqual([info.dim, info.stale], [32, 1]);
+  assert.deepEqual([info.dim, info.reportedDim, info.stale], [null, 32, 1], 'the size is known only once the model has returned a vector');
   await assert.rejects(e.search('rent'), (err) => err.code === 'needs-reembed' && /reembed/.test(err.message));
   const done = await e.reembed();
   assert.deepEqual(done.map((r) => r.status), ['reembedded']);
@@ -145,6 +145,22 @@ test('changing the model blocks search until every document is re-embedded', asy
 
   // The setting persists with the index.
   assert.equal(engine().settings().model, 'other');
+});
+
+test("a model whose reported size is not the size it returns still embeds, and the measured size is kept for it", async (t) => {
+  // embeddinggemma-2 reports 512 in /api/show and returns 768 (t-064b29db7b).
+  const ollama = fakeOllama({ models: { gemma: 48 }, reported: { gemma: 16 } });
+  const { engine, write } = setup(t, ollama);
+  const e = engine();
+  await e.setModel({ model: 'gemma' });
+  const r = await e.ingest(write('lease.md', leaseMd));
+  assert.equal(r.status, 'added', r.error);
+  assert.equal(e.stats().dim, 48);
+  assert.equal((await e.search('when is rent due')).passages[0].docName, 'lease.md');
+  // Reopened, the engine still knows the size, so a vector of another size is refused.
+  const again = engine(fakeOllama({ models: { gemma: 24 } }));
+  assert.equal(again.embedder.dim, 48);
+  await assert.rejects(again.embedder.embedQuery('rent'), /24 dimensions, expected 48/);
 });
 
 test('a query prefix alone does not make documents stale; a document prefix does', async (t) => {

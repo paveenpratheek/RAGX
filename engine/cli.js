@@ -237,7 +237,7 @@ async function main(argv) {
         if (rest[0] === 'set-model') {
           if (!rest[1]) throw new UsageError('config set-model needs a model name.');
           const r = await engine.setModel({ model: rest[1], queryPrefix: opts['query-prefix'] || '', docPrefix: opts['doc-prefix'] || '' });
-          console.log(`Embedding with ${r.model}: ${r.dim} dimensions, ${r.ctx}-token window.`);
+          console.log(`Embedding with ${r.model}: ${r.dim ? `${r.dim} dimensions` : 'dimensions measured on the first embedding'}, ${r.ctx}-token window.`);
           if (r.stale) console.log(`${r.stale} document(s) were embedded another way - run "reembed" before searching.`);
           return 0;
         }

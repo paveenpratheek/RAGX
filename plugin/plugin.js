@@ -514,7 +514,7 @@ function renderSettings() {
   facts.replaceChildren(
     ...row('Engine', `${engine.url} · version ${st.version} · pid ${st.pid}`),
     ...row('Data', st.dataDir),
-    ...row('Ollama', (st.ollama.state === 'up' ? `${st.ollama.model} · ${st.ollama.dim} dimensions · ${st.ollama.window}-token window` : st.ollama.error || st.ollama.state)
+    ...row('Ollama', (st.ollama.state === 'up' ? `${st.ollama.model} · ${st.ollama.dim ? `${st.ollama.dim} dimensions` : 'dimensions measured on the first embedding'} · ${st.ollama.window}-token window` : st.ollama.error || st.ollama.state)
       + (st.ollama.owned ? ' · started by the engine, stops with it' : st.ollama.managed && st.ollama.state === 'up' ? ' · was already running; left running when the engine stops, its model unloaded' : '')),
     ...row('Claude', agent('claude')),
     ...row('Antigravity', agent('agy')),

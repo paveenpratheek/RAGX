@@ -198,7 +198,7 @@ export async function startServer({
     let value;
     try {
       const info = await engine.embedder.describe();
-      value = { state: 'up', model: info.model, dim: info.dim, window: info.ctx };
+      value = { state: 'up', model: info.model, dim: info.dim ?? engine.knownDim(), window: info.ctx };
     } catch (e) {
       value = { state: e.code === 'model-missing' ? 'model-missing' : e.code === 'ollama-down' ? 'down' : 'error', model: engine.embedder.model, error: e.message };
     }

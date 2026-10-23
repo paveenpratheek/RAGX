@@ -2,7 +2,9 @@ import { DEFAULT_MODEL } from '../engine/lib/embed.js';
 
 /* A stand-in Ollama. Vectors are words hashed into buckets, so texts that
  * share words are close - enough to test the pipeline, not meaning. */
-export function fakeOllama({ models = { [DEFAULT_MODEL]: 64, other: 32 }, ctx = 512, maxChars = Infinity, failAfter = Infinity } = {}) {
+/* reported: what /api/show claims a model's embedding_length is, when that
+ * differs from what it returns - as embeddinggemma-2's does (t-064b29db7b). */
+export function fakeOllama({ models = { [DEFAULT_MODEL]: 64, other: 32 }, reported = {}, ctx = 512, maxChars = Infinity, failAfter = Infinity } = {}) {
   const state = { embedCalls: 0, inputs: [], refusals: 0 };
   const hash = (s) => { let h = 2166136261; for (const c of s) h = Math.imul(h ^ c.codePointAt(0), 16777619); return h >>> 0; };
   const vec = (text, dim) => {
@@ -17,7 +19,7 @@ export function fakeOllama({ models = { [DEFAULT_MODEL]: 64, other: 32 }, ctx = 
     const p = new URL(url).pathname;
     if (!dim) return reply(404, { error: `model "${body.model}" not found, try pulling it first` });
     if (p === '/api/show') {
-      return reply(200, { capabilities: ['embedding'], model_info: { 'general.architecture': 'fake', 'fake.embedding_length': dim, 'fake.context_length': ctx } });
+      return reply(200, { capabilities: ['embedding'], model_info: { 'general.architecture': 'fake', 'fake.embedding_length': reported[body.model] ?? dim, 'fake.context_length': ctx } });
     }
     if (state.embedCalls >= failAfter) throw new TypeError('fetch failed');
     state.embedCalls++;

@@ -95,7 +95,13 @@ export class Embedder {
 
   /* The model's own numbers, and a refusal if it cannot embed at all - a
    * chat model named here by mistake would otherwise fail on every chunk
-   * (t-48a192b1e7). */
+   * (t-48a192b1e7).
+   *
+   * The vector size is not taken from here: /api/show's embedding_length can
+   * be an inner layer's width - embeddinggemma-2 reports 512 and returns 768
+   * (t-064b29db7b) - so it is only reportedDim, and dim is learned from the
+   * first vector the model returns (t-ab9179da22). A probe embedding here
+   * would load the model on every status check. */
   async describe() {
     const show = await this.post('/api/show', { model: this.model });
     const caps = show.capabilities || [];
@@ -109,9 +115,9 @@ export class Embedder {
       const k = Object.keys(info).find((key) => key.endsWith('.' + suffix));
       return k ? Number(info[k]) : null;
     };
-    this.dim = pick('embedding_length');
+    this.reportedDim = pick('embedding_length');
     this.ctx = pick('context_length');
-    return { model: this.model, dim: this.dim, ctx: this.ctx };
+    return { model: this.model, dim: this.dim, reportedDim: this.reportedDim, ctx: this.ctx };
   }
 
   async embed(inputs, stats = null) {

@@ -51,13 +51,31 @@ export class Engine {
   constructor(dir, { makeEmbedder = (s) => new Embedder(s) } = {}) {
     this.dir = dir;
     this.store = new Store(path.join(dir, 'rag.db'));
+    // An index from before the size was kept per model measured it with the model set then.
+    if (this.store.getMeta('embed_dim', null) && !this.store.getMeta('embed_dim_model', null)) {
+      this.store.setMeta('embed_dim_model', readSettings(this.store).model);
+    }
     this.makeEmbedder = makeEmbedder;
-    this.embedder = makeEmbedder(readSettings(this.store));
+    this.embedder = this.withKnownDim(makeEmbedder(readSettings(this.store)));
     this.index = null;
     this.stopRequested = false; // set by a server stopping; ingest ends at its next step
   }
 
   close() { this.store.close(); }
+
+  /* The vector size this model was measured to return, kept with the model's
+   * name so a vector of another size is still caught after a restart
+   * (t-ab9179da22). */
+  withKnownDim(embedder) {
+    if (this.store.getMeta('embed_dim_model', null) === embedder.model) {
+      embedder.dim = Number(this.store.getMeta('embed_dim', 0)) || null;
+    }
+    return embedder;
+  }
+
+  knownDim() {
+    return this.store.getMeta('embed_dim_model', null) === this.embedder.model ? Number(this.store.getMeta('embed_dim', 0)) || null : null;
+  }
 
   settings() { return readSettings(this.store); }
 
@@ -179,7 +197,10 @@ export class Engine {
       done += part.length;
       say('embedding', done, total);
     }
-    if (this.embedder.dim) this.store.setMeta('embed_dim', this.embedder.dim);
+    if (this.embedder.dim) {
+      this.store.setMeta('embed_dim', this.embedder.dim);
+      this.store.setMeta('embed_dim_model', this.embedder.model);
+    }
   }
 
   /* The vector index is built on first search from every vector the current
@@ -232,10 +253,9 @@ export class Engine {
    * model never becomes the setting. Changing the model or the document
    * prefix leaves every ready document stale until reembed. */
   async setModel({ model, queryPrefix = '', docPrefix = '' }) {
-    const next = this.makeEmbedder({ model, queryPrefix, docPrefix });
+    const next = this.withKnownDim(this.makeEmbedder({ model, queryPrefix, docPrefix }));
     const info = await next.describe();
     writeSettings(this.store, { model, queryPrefix, docPrefix });
-    if (info.dim) this.store.setMeta('embed_dim', info.dim);
     this.embedder = next;
     this.index = null;
     return { ...info, stale: this.store.staleDocs(signature({ model, docPrefix })).length };
@@ -273,7 +293,7 @@ export class Engine {
       ...this.store.totals(),
       ...this.settings(),
       signature: this.embedder.signature,
-      dim: Number(this.store.getMeta('embed_dim', 0)) || null,
+      dim: this.knownDim(),
       bytes: fs.existsSync(db) ? fs.statSync(db).size : 0,
       dir: this.dir,
     };

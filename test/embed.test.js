@@ -32,12 +32,13 @@ test('a query gets the query prefix, not the document one', async () => {
   assert.deepEqual(calls[0].body.input, ['search_query: when?']);
 });
 
-test('describe reads the dimension and context length, and refuses a model that cannot embed', async () => {
+test('describe reads the context length and the size Ollama reports, and refuses a model that cannot embed', async () => {
   const show = (caps) => fakeOllama(() => ({ json: {
     capabilities: caps,
     model_info: { 'general.architecture': 'nomic-bert-moe', 'nomic-bert-moe.embedding_length': 768, 'nomic-bert-moe.context_length': 512 },
   } }));
-  assert.deepEqual(await new Embedder({ fetch: show(['embedding']).fetch }).describe(), { model: DEFAULT_MODEL, dim: 768, ctx: 512 });
+  // The size is learned from a real vector, never taken from /api/show (t-ab9179da22).
+  assert.deepEqual(await new Embedder({ fetch: show(['embedding']).fetch }).describe(), { model: DEFAULT_MODEL, dim: null, reportedDim: 768, ctx: 512 });
   await assert.rejects(new Embedder({ model: 'llama3', fetch: show(['completion']).fetch }).describe(), (e) => e.code === 'not-embedding');
 });
 
@@ -82,9 +83,10 @@ const hasNomic = live && await fetch(OLLAMA + '/api/show', { method: 'POST', bod
 
 test('live: nomic reports 768 dimensions and a 512-token window, and embeds normalised vectors', { skip: !hasNomic && 'Ollama or the model is not available' }, async () => {
   const e = new Embedder();
-  assert.deepEqual(await e.describe(), { model: DEFAULT_MODEL, dim: 768, ctx: 512 });
+  assert.deepEqual(await e.describe(), { model: DEFAULT_MODEL, dim: null, reportedDim: 768, ctx: 512 });
   const [v] = await e.embedDocuments(['The invoice was paid on 3 March.']);
   assert.equal(v.length, 768);
+  assert.equal(e.dim, 768);
   assert.ok(Math.abs(Math.hypot(...v) - 1) < 1e-3);
 });
 
