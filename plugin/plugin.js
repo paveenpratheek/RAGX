@@ -80,6 +80,7 @@ function showOffline() {
   $('offline').hidden = notes;
   document.querySelectorAll('[data-panel]').forEach((p) => { p.hidden = !(notes && p.dataset.panel === 'notifications'); });
   $('ollama').hidden = true;
+  $('stale').hidden = true;
   $('start-cmd').textContent = startCommand();
   $('data-dir').textContent = S.dataDir || 'not given yet';
   $('repo-form').hidden = Boolean(S.repo);
@@ -114,6 +115,7 @@ async function refresh() {
   }
   showOnline();
   showOllama(st.ollama);
+  showStale(st);
   renderSettings();
   renderPool(st.pool);
   if (!was) {
@@ -121,6 +123,17 @@ async function refresh() {
     await Promise.all([loadDocs(), loadConversations()]);
     if (S.agent === 'agy') warm();
   }
+}
+
+/* Documents embedded with another model are refused by search until they are
+ * embedded again - after the switch to embeddinggemma-2 that is every one
+ * (t-5dbc6f6669) - so the page says so where it is seen and offers the fix. */
+function showStale(st) {
+  const n = st.stale || 0;
+  $('stale').hidden = !n;
+  if (!n) return;
+  $('stale-msg').textContent = `${n} document${n === 1 ? ' was' : 's were'} embedded with another model. Questions cannot be searched until ${n === 1 ? 'it is' : 'they are'} embedded again with ${st.settings.model}.`;
+  $('stale-reembed').disabled = Boolean(st.queue && st.queue.length) || Boolean(st.ingesting);
 }
 
 function showOllama(o) {
@@ -193,7 +206,9 @@ function onEvent(e) {
       S.progress.delete(e.doc.id);
       S.docs.set(e.doc.id, e.doc);
       renderDocs();
-      toast(e.status === 'exists' ? `${e.doc.name} is already in the library.` : `${e.doc.name} is ready - ${e.doc.chunks} passages.`);
+      toast(e.status === 'exists' ? `${e.doc.name} is already in the library.`
+        : `${e.doc.name} is ready - ${e.doc.chunks} passages${e.doc.figures ? `, ${e.doc.figures} figure${e.doc.figures === 1 ? '' : 's'}` : ''}.`);
+      if (e.status === 'reembedded') refresh(); // the stale count has changed
       setStatus('up', `Engine running · ${S.docs.size} documents`);
       break;
     case 'ingest-error':
@@ -252,7 +267,7 @@ function docRow(d) {
   tr.dataset.id = String(d.id);
   const name = el('td', 'name', d.name);
   if (d.source_path) name.title = d.source_path;
-  tr.append(name, statusCell(d), el('td', 'num', String(d.chunks || '')), el('td', 'num', d.pages ? String(d.pages) : ''));
+  tr.append(name, statusCell(d), el('td', 'num', String(d.chunks || '')), el('td', 'num', d.figures ? String(d.figures) : ''), el('td', 'num', d.pages ? String(d.pages) : ''));
   const acts = el('td', 'acts');
   const re = el('button', null, 'Re-index'); re.dataset.act = 'reindex';
   const rm = el('button', 'danger', 'Remove'); rm.dataset.act = 'remove';
@@ -514,7 +529,7 @@ function renderSettings() {
   facts.replaceChildren(
     ...row('Engine', `${engine.url} · version ${st.version} · pid ${st.pid}`),
     ...row('Data', st.dataDir),
-    ...row('Ollama', (st.ollama.state === 'up' ? `${st.ollama.model} · ${st.ollama.dim ? `${st.ollama.dim} dimensions` : 'dimensions measured on the first embedding'} · ${st.ollama.window}-token window` : st.ollama.error || st.ollama.state)
+    ...row('Ollama', (st.ollama.state === 'up' ? `${st.ollama.model} · ${st.ollama.dim ? `${st.ollama.dim} dimensions` : 'dimensions measured on the first embedding'} · ${st.ollama.window}-token window · ${st.ollama.vision ? 'embeds figures' : 'text only - figures are kept but not searched'}` : st.ollama.error || st.ollama.state)
       + (st.ollama.owned ? ' · started by the engine, stops with it' : st.ollama.managed && st.ollama.state === 'up' ? ' · was already running; left running when the engine stops, its model unloaded' : '')),
     ...row('Claude', agent('claude')),
     ...row('Antigravity', agent('agy')),
@@ -578,12 +593,12 @@ function timebar(c) {
   const total = c.ms || 0;
   if (!total) return bar;
   const load = c.load_ms || 0;
-  const parts = [['load', load], ['embed', Math.max((c.embed_ms || 0) - load, 0)], ['search', c.search_ms || 0], ['agent', c.agent_ms || 0]];
+  const parts = [['load', load], ['embed', Math.max((c.embed_ms || 0) - load, 0)], ['image', c.image_ms || 0], ['search', c.search_ms || 0], ['agent', c.agent_ms || 0]];
   for (const [cls, ms] of parts) {
     if (!ms) continue;
     const i = el('i', cls);
     i.style.width = `${Math.min(100, (ms / total) * 100)}%`;
-    i.title = `${{ load: 'loading the model', embed: 'embedding', search: 'searching', agent: 'the agent answering' }[cls]}: ${fmtMs(ms)}`;
+    i.title = `${{ load: 'loading the model', embed: 'embedding text', image: 'embedding figures', search: 'searching', agent: 'the agent answering' }[cls]}: ${fmtMs(ms)}`;
     bar.appendChild(i);
   }
   return bar;
@@ -633,7 +648,7 @@ function renderCards(sum) {
   $('tr-cards').replaceChildren(
     stat('Calls', String(calls), split || 'none yet'),
     stat('Time per call', calls ? fmtMs(avg) : '-', calls ? `slowest ${fmtMs(slowest)}` : null),
-    stat('Embedding', fmtMs(sum.embedMs), sum.loadMs ? `${fmtMs(sum.loadMs)} of it loading the model` : 'model was already loaded'),
+    stat('Embedding', fmtMs(sum.embedMs + (sum.imageMs || 0)), [sum.imageMs ? `${fmtMs(sum.imageMs)} of it figures` : '', sum.loadMs ? `${fmtMs(sum.loadMs)} loading the model` : 'model was already loaded'].filter(Boolean).join(' · ')),
     stat('Model loads', String(sum.loads), `loaded for ${loaded >= 3600 ? (loaded / 3600).toFixed(1) + ' h' : Math.round(loaded / 60) + ' min'}`),
     stat('GPU now', now && now.gpuUtil != null ? `${now.gpuUtil}%` : '-',
       now && now.vramUsed != null ? `VRAM ${now.vramUsed} / ${now.vramTotal} MiB` : 'no NVIDIA GPU found'),
@@ -765,6 +780,8 @@ async function openCall(id) {
   const row = (k, v) => { if (v != null && v !== '') facts.append(el('dt', null, k), el('dd', null, v)); };
   row('Total', fmtMs(c.ms));
   row('Embedding', c.embed_ms != null ? fmtMs(c.embed_ms) : null);
+  row('Embedding figures', c.image_ms ? fmtMs(c.image_ms) : null);
+  row('Figures', c.detail && c.detail.figures ? String(c.detail.figures) : null);
   row('Loading the model', c.load_ms ? fmtMs(c.load_ms) : null);
   row('Search', c.search_ms != null ? fmtMs(c.search_ms) : null);
   row('Agent', c.agent_ms != null ? fmtMs(c.agent_ms) : null);
@@ -1041,7 +1058,18 @@ function wire() {
   $('note-list').addEventListener('click', (e) => { if (e.target.closest('button[data-act="approve"]')) startEngine(); });
 
   // Settings
-  $('settings-form').addEventListener('input', (e) => { e.currentTarget.dataset.dirty = '1'; });
+  $('settings-form').addEventListener('input', (e) => {
+    e.currentTarget.dataset.dirty = '1';
+    // A new model brings its own prefixes, as the engine sets them (defaultPrefixes in embed.js).
+    if (e.target.name === 'embedModel') {
+      const gemma = /^embeddinggemma/i.test(e.target.value.trim());
+      e.currentTarget.queryPrefix.value = gemma ? 'task: search result | query: ' : '';
+      e.currentTarget.docPrefix.value = gemma ? 'title: none | text: ' : '';
+    }
+  });
+  $('stale-reembed').addEventListener('click', async () => {
+    try { await engine.json('POST', '/api/reembed'); $('stale-reembed').disabled = true; toast('Re-embedding - progress shows in the library.'); } catch (err) { toast(err.message, true); }
+  });
   $('settings-form').addEventListener('submit', saveSettings);
   $('reembed').addEventListener('click', async () => {
     try { await engine.json('POST', '/api/reembed'); $('reembed').hidden = true; $('settings-msg').textContent = 'Re-embedding - progress shows in the library.'; } catch (e) { toast(e.message, true); }

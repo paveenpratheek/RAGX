@@ -25,7 +25,7 @@ export class Store {
       getMeta: p('select value from meta where key = ?'),
       setMeta: p('insert into meta (key, value) values (?, ?) on conflict (key) do update set value = excluded.value'),
       docBySha: p('select * from documents where sha256 = ?'),
-      doc: p('select * from documents where id = ?'),
+      doc: p('select d.*, (select count(*) from figures f where f.doc_id = d.id) figures from documents d where d.id = ?'),
       docs: p('select d.*, (select count(*) from figures f where f.doc_id = d.id) figures from documents d order by d.id'),
       addDoc: p(`insert into documents (sha256, name, ext, source_path, bytes, status, added_at, updated_at)
                  values (?, ?, ?, ?, ?, 'queued', ?, ?)`),
@@ -60,7 +60,8 @@ export class Store {
       stale: p(`select * from documents where status = 'ready' and (embedded_with is null or embedded_with <> ?)`),
       pending: p(`select * from documents where status in ('queued', 'extracting', 'embedding') order by id`),
       totals: p(`select (select count(*) from documents) docs, (select count(*) from chunks) chunks,
-                        (select count(*) from vectors) vectors, (select count(*) from figures) figures`),
+                        (select count(*) from vectors) vectors, (select count(*) from figures) figures,
+                        (select count(*) from figure_vectors) figure_vectors`),
       addConversation: p('insert into conversations (agent, model, title, created_at, updated_at) values (?, ?, ?, ?, ?)'),
       conversation: p('select * from conversations where id = ?'),
       conversations: p(`select c.*, (select count(*) from messages m where m.conversation_id = c.id and m.role = 'user') questions
@@ -77,6 +78,13 @@ export class Store {
                     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
       docFigures: p('select * from figures where doc_id = ? order by ord'),
       figure: p('select f.*, d.name doc_name from figures f join documents d on d.id = f.doc_id where f.id = ?'),
+      unembeddedFigures: p(`select f.id, f.file from figures f left join figure_vectors v on v.figure_id = f.id
+                            where f.doc_id = ? and v.figure_id is null order by f.ord`),
+      putFigureVector: p('insert or replace into figure_vectors (figure_id, v) values (?, ?)'),
+      figureVectorsFor: p(`select v.figure_id id, v.v from figure_vectors v join figures f on f.id = v.figure_id
+                           join documents d on d.id = f.doc_id where d.status = 'ready' and d.embedded_with = ?`),
+      docFigureVectors: p('select v.figure_id id, v.v from figure_vectors v join figures f on f.id = v.figure_id where f.doc_id = ?'),
+      docFigureIds: p('select id from figures where doc_id = ?'),
     };
   }
 
@@ -144,6 +152,19 @@ export class Store {
   }
 
   docFigures(docId) { return this.q.docFigures.all(docId).map(figureRow); }
+  docFigureIds(docId) { return this.q.docFigureIds.all(docId).map((r) => r.id); }
+
+  /* What a document's figures still owe: those with no vector yet. */
+  unembeddedFigures(docId) { return this.q.unembeddedFigures.all(docId); }
+
+  putFigureVectors(pairs) {
+    transaction(this.db, () => {
+      for (const { id, vector } of pairs) this.q.putFigureVector.run(id, toBlob(vector));
+    });
+  }
+
+  figureVectors(embeddedWith) { return this.q.figureVectorsFor.all(embeddedWith).map((r) => ({ id: r.id, vector: fromBlob(r.v) })); }
+  docFigureVectors(docId) { return this.q.docFigureVectors.all(docId).map((r) => ({ id: r.id, vector: fromBlob(r.v) })); }
   figure(id) { const r = this.q.figure.get(id); return r ? figureRow(r) : null; }
 
   /* What an interrupted embed still owes: chunks with no vector yet. */

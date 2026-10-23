@@ -71,7 +71,8 @@ test('chunks are embedded with their document and heading path, and stored witho
   const { engine, write, ollama } = setup(t);
   const e = engine();
   await e.ingest(write('lease.md', leaseMd));
-  assert.ok(ollama.inputs.includes('lease.md > Lease > Rent\n\nRent of 1,200 is due on the first of each month.'));
+  // The default model, embeddinggemma-2, gets its document task line first (t-6297a0cdf3).
+  assert.ok(ollama.inputs.includes('title: none | text: lease.md > Lease > Rent\n\nRent of 1,200 is due on the first of each month.'));
   assert.equal((await e.search('rent due')).passages[0].text, 'Rent of 1,200 is due on the first of each month.');
 });
 

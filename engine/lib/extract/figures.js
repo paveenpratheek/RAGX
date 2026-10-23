@@ -21,7 +21,8 @@ export const CAPTION = /^\s*(figure|fig\.?|chart|diagram|graph|exhibit)\s*\d+/i;
 export const MIN_SIDE = 150;
 
 /* Long sides beyond this are scaled down: embeddinggemma-2 shrinks every
- * image to a fixed size anyway, and the page shows figures at panel width. */
+ * image to a fixed size anyway, and the page shows figures at panel width.
+ * At this size a Word picture takes about 4.5 s to embed (t-edf4f31690). */
 export const MAX_SIDE = 1600;
 
 export const isFigureSize = (width, height) => width >= MIN_SIDE && height >= MIN_SIDE;

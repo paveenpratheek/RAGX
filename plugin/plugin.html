@@ -66,6 +66,12 @@
     <button id="ollama-pull" hidden>Download the model</button>
   </section>
 
+  <section id="stale" class="notice" hidden>
+    <span id="stale-msg"></span>
+    <span class="grow"></span>
+    <button id="stale-reembed">Re-embed now</button>
+  </section>
+
   <section class="panel ask" data-panel="ask" hidden>
     <aside class="convs">
       <button id="new-conv" class="wide">New conversation</button>
@@ -110,7 +116,7 @@
     </form>
     <div class="note" id="queue"></div>
     <table class="docs">
-      <thead><tr><th>Document</th><th>Status</th><th class="num">Chunks</th><th class="num">Pages</th><th></th></tr></thead>
+      <thead><tr><th>Document</th><th>Status</th><th class="num">Chunks</th><th class="num">Figures</th><th class="num">Pages</th><th></th></tr></thead>
       <tbody id="doc-list"></tbody>
     </table>
     <p class="note" id="docs-empty" hidden>No documents yet.</p>

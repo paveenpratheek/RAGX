@@ -68,8 +68,8 @@ export class Tracker {
     this.runs = 0;
     const p = (sql) => this.db.prepare(sql);
     this.q = {
-      add: p(`insert into calls (at, ms, source, client, kind, question, agent, model, embed_ms, load_ms, search_ms, agent_ms, results, detail, error)
-              values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+      add: p(`insert into calls (at, ms, source, client, kind, question, agent, model, embed_ms, load_ms, search_ms, agent_ms, image_ms, results, detail, error)
+              values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
       call: p('select * from calls where id = ?'),
       sample: p('insert or replace into samples (at, gpu_util, vram_used, vram_total, model_loaded, model_vram) values (?, ?, ?, ?, ?, ?)'),
       minute: p(`insert into samples_min (minute, n, gpu_util_sum, gpu_util_max, vram_used_max, vram_total, model_loaded_n, model_vram_max)
@@ -86,14 +86,14 @@ export class Tracker {
       mins: p('select * from samples_min where minute >= ? order by minute'),
       loadedSeconds: p('select coalesce(sum(model_loaded_n), 0) n from samples_min where minute >= ?'),
       bySource: p(`select source, kind, count(*) calls, avg(ms) avg_ms, max(ms) max_ms, sum(coalesce(embed_ms, 0)) embed_ms,
-                     sum(coalesce(load_ms, 0)) load_ms,
+                     sum(coalesce(load_ms, 0)) load_ms, sum(coalesce(image_ms, 0)) image_ms,
                      -- over half a second loading means the call woke the model (t-c4370709ad)
                      sum(case when load_ms > 500 then 1 else 0 end) loads,
                      sum(case when error is not null then 1 else 0 end) errors
                    from calls where at >= ? group by source, kind`),
       clear: p('delete from calls'),
       maxId: p('select coalesce(max(id), 0) id from calls'),
-      newer: p(`select id, at, ms, source, client, kind, question, agent, model, embed_ms, load_ms, search_ms, agent_ms, results, error
+      newer: p(`select id, at, ms, source, client, kind, question, agent, model, embed_ms, load_ms, search_ms, agent_ms, image_ms, results, error
                 from calls where id > ? order by id limit 50`),
     };
     this.lastId = this.q.maxId.get().id;
@@ -148,7 +148,7 @@ export class Tracker {
     if (at == null) at = started ? started.at : this.now();
     if (run != null) this.running.delete(run);
     const id = Number(this.q.add.run(at, ms, source, client, kind, question, agent, model,
-      timings.embedMs ?? null, timings.loadMs ?? null, timings.searchMs ?? null, timings.agentMs ?? null,
+      timings.embedMs ?? null, timings.loadMs ?? null, timings.searchMs ?? null, timings.agentMs ?? null, timings.imageMs ?? null,
       results, json(detail), error).lastInsertRowid);
     const row = this.call(id);
     this.lastId = Math.max(this.lastId, id);
@@ -170,7 +170,7 @@ export class Tracker {
     if (since) { where.push('at >= ?'); args.push(Number(since)); }
     if (source) { where.push('source = ?'); args.push(source); }
     if (kind) { where.push('kind = ?'); args.push(kind); }
-    const sql = `select id, at, ms, source, client, kind, question, agent, model, embed_ms, load_ms, search_ms, agent_ms, results, error
+    const sql = `select id, at, ms, source, client, kind, question, agent, model, embed_ms, load_ms, search_ms, agent_ms, image_ms, results, error
                  from calls ${where.length ? 'where ' + where.join(' and ') : ''} order by id desc limit ?`;
     return this.db.prepare(sql).all(...args, Math.min(Number(limit) || 50, 500));
   }
@@ -234,15 +234,15 @@ export class Tracker {
       const out = {};
       for (const r of rows) {
         const k = r[key];
-        const o = out[k] || (out[k] = { calls: 0, totalMs: 0, maxMs: 0, embedMs: 0, loadMs: 0, loads: 0, errors: 0 });
+        const o = out[k] || (out[k] = { calls: 0, totalMs: 0, maxMs: 0, embedMs: 0, imageMs: 0, loadMs: 0, loads: 0, errors: 0 });
         o.calls += r.calls; o.totalMs += (r.avg_ms || 0) * r.calls; o.maxMs = Math.max(o.maxMs, r.max_ms || 0);
-        o.embedMs += r.embed_ms; o.loadMs += r.load_ms; o.loads += r.loads; o.errors += r.errors;
+        o.embedMs += r.embed_ms; o.imageMs += r.image_ms; o.loadMs += r.load_ms; o.loads += r.loads; o.errors += r.errors;
       }
       for (const o of Object.values(out)) { o.avgMs = o.calls ? Math.round(o.totalMs / o.calls) : 0; delete o.totalMs; }
       return out;
     };
-    const all = rows.reduce((a, r) => ({ calls: a.calls + r.calls, embedMs: a.embedMs + r.embed_ms, loadMs: a.loadMs + r.load_ms, loads: a.loads + r.loads }),
-      { calls: 0, embedMs: 0, loadMs: 0, loads: 0 });
+    const all = rows.reduce((a, r) => ({ calls: a.calls + r.calls, embedMs: a.embedMs + r.embed_ms, imageMs: a.imageMs + r.image_ms, loadMs: a.loadMs + r.load_ms, loads: a.loads + r.loads }),
+      { calls: 0, embedMs: 0, imageMs: 0, loadMs: 0, loads: 0 });
     const loadedSamples = this.q.loadedSeconds.get(Math.floor(since / 60000) * 60000).n;
     return {
       since, ...all,

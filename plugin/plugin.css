@@ -202,7 +202,7 @@ progress { width: 120px; height: 6px; vertical-align: middle; accent-color: var(
 .who.you { background: var(--acc-soft); } .who.agent { background: color-mix(in srgb, var(--green) 20%, transparent); }
 .timebar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--soft); width: 110px; margin-top: 3px; }
 .timebar i { display: block; height: 100%; }
-.timebar .load { background: var(--yellow); } .timebar .embed { background: var(--green); } .timebar .search { background: var(--muted); } .timebar .agent { background: var(--accent); }
+.timebar .load { background: var(--yellow); } .timebar .image { background: color-mix(in srgb, var(--green) 55%, var(--accent)); } .timebar .embed { background: var(--green); } .timebar .search { background: var(--muted); } .timebar .agent { background: var(--accent); }
 .tracker .source { position: fixed; top: 0; right: 0; bottom: 0; z-index: 15; box-shadow: -8px 0 24px rgb(0 0 0 / .18); width: min(440px, 100%); }
 .detail-body { flex: 1; overflow: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; font-size: 13.5px; }
 .detail-body h4 { margin: 4px 0 0; font-size: 13px; }

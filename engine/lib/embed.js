@@ -1,8 +1,11 @@
 /* Embeddings from a local Ollama model (t-01e6275492).
  *
- * The model is a setting kept in the index, nomic-embed-text-v2-moe until
- * someone names another (t-6c34aa5588, t-8e7cd345f4). Nothing about a model is
- * hard-coded: its dimension and context length are read from /api/show.
+ * The model is a setting kept in the index, embeddinggemma-2:440m until
+ * someone names another (t-ba2cbf35c7, t-ada6e7d458, t-8e7cd345f4). It embeds
+ * text and images into one space, so a question finds passages and figures
+ * alike. Nothing about a model is hard-coded: its context length and whether
+ * it can see images are read from /api/show, its vector size from the first
+ * vector it returns.
  *
  * Every request sends truncate:false (t-90f5b67324). Ollama's default is to
  * cut an over-long input without saying so - the vector then describes only
@@ -10,7 +13,19 @@
  * name, and the caller can chunk smaller.
  */
 
-export const DEFAULT_MODEL = 'nomic-embed-text-v2-moe';
+export const DEFAULT_MODEL = 'embeddinggemma-2:440m';
+
+/* EmbeddingGemma expects a task line before each input; with these, search on
+ * the user's documents put the answer first 8 times in 12 against 6 without
+ * (t-6297a0cdf3). Other models get none unless they are set. */
+export function defaultPrefixes(model) {
+  return /^embeddinggemma/i.test(String(model))
+    ? { queryPrefix: 'task: search result | query: ', docPrefix: 'title: none | text: ' }
+    : { queryPrefix: '', docPrefix: '' };
+}
+
+// Images are slow to embed (about 2.5 s each on the MX450), so fewer go per request.
+const IMAGE_BATCH = 4;
 export const OLLAMA = 'http://127.0.0.1:11434';
 
 export class EmbedError extends Error {
@@ -24,10 +39,12 @@ export class EmbedError extends Error {
 /* The settings live in the index's meta table, so the index always knows
  * how its vectors were made. */
 export function readSettings(store) {
+  const model = store.getMeta('embed_model', DEFAULT_MODEL);
+  const d = defaultPrefixes(model);
   return {
-    model: store.getMeta('embed_model', DEFAULT_MODEL),
-    queryPrefix: store.getMeta('query_prefix', ''),
-    docPrefix: store.getMeta('doc_prefix', ''),
+    model,
+    queryPrefix: store.getMeta('query_prefix', d.queryPrefix),
+    docPrefix: store.getMeta('doc_prefix', d.docPrefix),
   };
 }
 
@@ -117,20 +134,22 @@ export class Embedder {
     };
     this.reportedDim = pick('embedding_length');
     this.ctx = pick('context_length');
-    return { model: this.model, dim: this.dim, reportedDim: this.reportedDim, ctx: this.ctx };
+    // Whether the model can embed images: Ollama lists 'vision' for those.
+    this.vision = caps.includes('vision');
+    return { model: this.model, dim: this.dim, reportedDim: this.reportedDim, ctx: this.ctx, vision: this.vision };
   }
 
-  async embed(inputs, stats = null) {
+  async embed(inputs, stats = null, { batch = this.batch, timeKey = 'ms' } = {}) {
     const out = [];
-    for (let i = 0; i < inputs.length; i += this.batch) {
-      const part = inputs.slice(i, i + this.batch);
+    for (let i = 0; i < inputs.length; i += batch) {
+      const part = inputs.slice(i, i + batch);
       const started = Date.now();
       const data = await this.post('/api/embed', { model: this.model, input: part, truncate: false });
       /* Ollama times its own work in nanoseconds, and load_duration is the
        * part spent loading the model - how a call that woke the GPU shows up
-       * in the tracker (t-acd3fa359a). */
+       * in the tracker (t-acd3fa359a). Images are timed apart from text. */
       if (stats) {
-        stats.ms = (stats.ms || 0) + (Date.now() - started);
+        stats[timeKey] = (stats[timeKey] || 0) + (Date.now() - started);
         stats.loadMs = (stats.loadMs || 0) + Math.round((data.load_duration || 0) / 1e6);
         stats.tokens = (stats.tokens || 0) + (data.prompt_eval_count || 0);
       }
@@ -150,4 +169,14 @@ export class Embedder {
   embedDocuments(texts, stats) { return this.embed(texts.map((t) => this.docPrefix + t), stats); }
 
   async embedQuery(text, stats) { return (await this.embed([this.queryPrefix + text], stats))[0]; }
+
+  /* Figures, each a PNG, into the same space as the text. Ollama takes an
+   * image as an input object with the field image, singular, in base64; an
+   * images field is silently ignored (t-a8dc8ee656). No prefix: the task
+   * line is for text. */
+  async embedImages(pngs, stats) {
+    const vecs = await this.embed(pngs.map((b) => ({ image: Buffer.from(b).toString('base64') })), stats, { batch: IMAGE_BATCH, timeKey: 'imageMs' });
+    if (stats) stats.images = (stats.images || 0) + pngs.length;
+    return vecs;
+  }
 }

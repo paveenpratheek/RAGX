@@ -172,3 +172,31 @@ test('the engine keeps figures as files with their rows, replaces them on re-ind
   assert.equal(fs.existsSync(e.figuresDir(pdf.doc.id)), false);
   assert.equal(e.store.figure(again[0].id), null);
 });
+
+test('figures are embedded after the text when the model can see images, and wait for one when it cannot', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-figvec-'));
+  const o = fakeOllama({ vision: ['embeddinggemma-2:440m'] });
+  const e = Engine.open(path.join(root, 'data'), { makeEmbedder: (s) => new Embedder({ ...s, fetch: o.fetch, retries: 0 }) });
+  t.after(() => { e.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  const file = (name, data) => { const f = path.join(root, name); fs.writeFileSync(f, data); return f; };
+  const phases = [];
+
+  // A model that embeds text only: the figure is kept, without a vector.
+  await e.setModel({ model: 'other' });
+  const pdf = await e.ingest(file('costs.pdf', makePdf([[{ text: 'Costs', size: 20, y: 760 }, ...barChartPage({ top: 700 })]])));
+  assert.deepEqual([pdf.status, pdf.figures, e.store.totals().figure_vectors, o.images || 0], ['added', 1, 0, 0]);
+
+  // Back on embeddinggemma-2, re-embedding gives the figure its vector, after the text, timed apart.
+  await e.setModel({ model: 'embeddinggemma-2:440m' });
+  const [r] = await e.reembed({ onProgress: (p) => p.phase === 'embedding' && phases.push(`${p.done}/${p.total}`) });
+  assert.equal(r.status, 'reembedded', r.error);
+  assert.equal(e.store.totals().figure_vectors, 1);
+  assert.equal(o.images, 1);
+  assert.equal(phases.at(-1), `${r.doc.chunks + 1}/${r.doc.chunks + 1}`, 'progress counts chunks and figures together');
+  assert.ok(r.timings.images === 1 && r.timings.imageMs >= 0);
+  assert.equal(e.store.figureVectors(e.embedder.signature).length, 1);
+
+  // An image file is embedded on its own.
+  const img = await e.ingest(file('photo.png', png(500, 400)));
+  assert.deepEqual([img.doc.chunks, e.store.docFigureVectors(img.doc.id).length], [0, 1]);
+});

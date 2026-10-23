@@ -160,6 +160,10 @@ create table if not exists samples_min (
 );
 `;
 
+/* Columns added after their table: [table, column, type]. image_ms is the
+ * time a call spent embedding figures, apart from text (t-5b3586cf20). */
+const COLUMNS = [['calls', 'image_ms', 'integer']];
+
 /* `lead` is how many characters at the start of a chunk repeat the end of the
  * one before it - the overlap. Search joins neighbouring chunks by dropping
  * exactly that much, so a passage built from two chunks never reads a
@@ -176,9 +180,12 @@ export function openDb(file) {
     db.close();
     throw new Error(`The index at ${file} was written by a newer engine (schema ${row.value}, this one knows ${SCHEMA_VERSION}).`);
   }
-  /* Every change so far only adds tables, which the schema above creates
-   * when missing - so an older index is brought up to date by opening it
-   * (t-a8652db0cd). */
+  /* Changes add tables, which the schema above creates when missing, and
+   * columns, added here - so an older index is brought up to date by opening
+   * it (t-a8652db0cd). */
+  for (const [table, column, type] of COLUMNS) {
+    if (!db.prepare(`pragma table_info(${table})`).all().some((c) => c.name === column)) db.exec(`alter table ${table} add column ${column} ${type}`);
+  }
   db.prepare("insert into meta (key, value) values ('schema_version', ?) on conflict (key) do update set value = excluded.value")
     .run(String(SCHEMA_VERSION));
   return db;

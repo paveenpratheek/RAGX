@@ -18,7 +18,7 @@ import crypto from 'node:crypto';
 import { Store, STATUS } from './store.js';
 import { extract, ExtractError, SUPPORTED } from './extract/index.js';
 import { chunk, targetFor } from './chunk.js';
-import { Embedder, EmbedError, readSettings, writeSettings, signature, chunkInput } from './embed.js';
+import { Embedder, EmbedError, readSettings, writeSettings, signature, chunkInput, defaultPrefixes } from './embed.js';
 import { VectorIndex } from './vectors.js';
 import { hybridSearch } from './search.js';
 
@@ -39,6 +39,7 @@ const FALLBACK = [1, 0.7, 0.5];
 /* How many chunks are embedded and written per step: the most a Ctrl+C can
  * cost, and how often progress is reported. */
 const STEP = 32;
+const FIGURE_STEP = 4; // images, about 2.5 s each on the MX450 (t-6142c47b80)
 
 export class Engine {
   static open(dataDir, options = {}) {
@@ -154,7 +155,7 @@ export class Engine {
       doc = this.store.doc(id);
       this.indexAdd(id);
       say('ready', doc.chunks, doc.chunks);
-      return { status: label, doc, ...built, timings: { ms: Date.now() - started, embedMs: stats.ms || 0, loadMs: stats.loadMs || 0 } };
+      return { status: label, doc, ...built, timings: { ms: Date.now() - started, embedMs: stats.ms || 0, imageMs: stats.imageMs || 0, images: stats.images || 0, loadMs: stats.loadMs || 0 } };
     } catch (e) {
       /* A document that cannot be read is in error for good. Ollama stopped,
        * or the model not pulled, leaves the status as it was, so the next
@@ -165,7 +166,7 @@ export class Engine {
       else this.store.setError(id, e.message);
       doc = this.store.doc(id);
       say('error');
-      return { status: 'error', doc, error: e.message, code: e.code, timings: { ms: Date.now() - started, embedMs: stats.ms || 0, loadMs: stats.loadMs || 0 } };
+      return { status: 'error', doc, error: e.message, code: e.code, timings: { ms: Date.now() - started, embedMs: stats.ms || 0, imageMs: stats.imageMs || 0, images: stats.images || 0, loadMs: stats.loadMs || 0 } };
     }
   }
 
@@ -187,12 +188,13 @@ export class Engine {
       if (this.index) this.index.remove(this.store.docChunkIds(doc.id));
       this.store.replaceChunks(doc.id, []);
       this.store.setEmbedding(doc.id, this.embedder.signature);
+      await this.embedMissing(doc, say, stats);
       return { target: null, rechunked: 0, ...found };
     }
     const first = targetFor(await this.windowTokens());
-    // The "document > heading" line is embedded with every chunk, so it
-    // comes out of the same budget.
-    const reserve = (heading) => chunkInput(doc.name, heading, '').length;
+    // The "document > heading" line and the model's document prefix are
+    // embedded with every chunk, so they come out of the same budget (t-2717ac3c99).
+    const reserve = (heading) => this.embedder.docPrefix.length + chunkInput(doc.name, heading, '').length;
     let lastError;
     for (const [tries, scale] of FALLBACK.entries()) {
       const target = Math.round(first * scale);
@@ -212,16 +214,38 @@ export class Engine {
     throw lastError;
   }
 
+  /* Whether the model can embed images, asked of Ollama once per model. */
+  async canSee() {
+    if (this.embedder.vision === undefined) await this.embedder.describe();
+    return this.embedder.vision;
+  }
+
+  /* Chunks first, then figures, each picked up where an interrupted run left
+   * off. A model that cannot see images leaves figures stored but without
+   * vectors, so they are not searched until a model that can embeds them
+   * (t-99e7177c73). */
   async embedMissing(doc, say, stats = null) {
     const todo = this.store.unembedded(doc.id);
-    const total = this.store.docChunkIds(doc.id).length;
-    let done = total - todo.length;
+    const figures = (await this.canSee()) ? this.store.unembeddedFigures(doc.id) : [];
+    const chunkTotal = this.store.docChunkIds(doc.id).length;
+    const figureTotal = figures.length ? this.store.docFigureIds(doc.id).length : 0;
+    const total = chunkTotal + figureTotal;
+    let done = total - todo.length - figures.length;
     say('embedding', done, total);
+    const stop = () => { if (this.stopRequested) throw new EngineError('stopped', 'Stopped; the rest is embedded on the next start.'); };
     for (let i = 0; i < todo.length; i += STEP) {
-      if (this.stopRequested) throw new EngineError('stopped', 'Stopped; the rest is embedded on the next start.');
+      stop();
       const part = todo.slice(i, i + STEP);
       const vectors = await this.embedder.embedDocuments(part.map((c) => chunkInput(doc.name, c.heading, c.text)), stats);
       this.store.putVectors(part.map((c, j) => ({ id: c.id, vector: vectors[j] })));
+      done += part.length;
+      say('embedding', done, total);
+    }
+    for (let i = 0; i < figures.length; i += FIGURE_STEP) {
+      stop();
+      const part = figures.slice(i, i + FIGURE_STEP);
+      const vectors = await this.embedder.embedImages(part.map((f) => fs.readFileSync(path.join(this.dir, f.file))), stats);
+      this.store.putFigureVectors(part.map((f, j) => ({ id: f.id, vector: vectors[j] })));
       done += part.length;
       say('embedding', done, total);
     }
@@ -280,7 +304,11 @@ export class Engine {
   /* The model is checked with Ollama before it is saved, so a typo or a chat
    * model never becomes the setting. Changing the model or the document
    * prefix leaves every ready document stale until reembed. */
-  async setModel({ model, queryPrefix = '', docPrefix = '' }) {
+  async setModel({ model, queryPrefix, docPrefix }) {
+    // Prefixes not given are the model's own (t-64e566c572).
+    const d = defaultPrefixes(model);
+    queryPrefix ??= d.queryPrefix;
+    docPrefix ??= d.docPrefix;
     const next = this.withKnownDim(this.makeEmbedder({ model, queryPrefix, docPrefix }));
     const info = await next.describe();
     writeSettings(this.store, { model, queryPrefix, docPrefix });

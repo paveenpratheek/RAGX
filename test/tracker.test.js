@@ -142,3 +142,24 @@ test('calls the command line writes to the same database reach the page on the n
   assert.equal(seen.at(-1).type, 'sample');
   assert.equal(seen.at(-1).sample.gpuUtil, 40);
 });
+
+test('a call keeps its image time apart from its text embedding, and an older calls table gains the column', async (t) => {
+  const { tracker } = setup(t);
+  const c = tracker.record({ source: 'you', kind: 'ingest', ms: 9000, timings: { embedMs: 3000, imageMs: 5000, loadMs: 0 } });
+  assert.deepEqual([c.embed_ms, c.image_ms], [3000, 5000]);
+  assert.equal(tracker.calls()[0].image_ms, 5000);
+  const s = tracker.summary();
+  assert.deepEqual([s.imageMs, s.bySource.you.imageMs], [5000, 5000]);
+
+  const { DatabaseSync } = await import('node:sqlite');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-oldcalls-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'rag.db');
+  const old = new DatabaseSync(file);
+  old.exec(`create table calls (id integer primary key, at integer not null, ms integer, source text not null, client text, kind text not null,
+    question text, agent text, model text, embed_ms integer, load_ms integer, search_ms integer, agent_ms integer, results integer, detail text, error text)`);
+  old.close();
+  const store = new Store(file);
+  assert.ok(store.db.prepare('pragma table_info(calls)').all().some((col) => col.name === 'image_ms'));
+  store.close();
+});

@@ -169,7 +169,8 @@ export async function startServer({
         tracker.record({
           run: i === 0 ? current.live : null, ms: t.ms ?? null, source: current.who.source, client: current.who.client, kind: current.who.kind,
           question: r.doc ? r.doc.name : r.name, timings: t, results: r.doc ? r.doc.chunks : 0,
-          detail: { docId: r.doc && r.doc.id, status: r.status, pages: r.doc && r.doc.pages, chunks: r.doc && r.doc.chunks, rechunked: r.rechunked || 0 },
+          detail: { docId: r.doc && r.doc.id, status: r.status, pages: r.doc && r.doc.pages, chunks: r.doc && r.doc.chunks, rechunked: r.rechunked || 0,
+            figures: r.figures ?? (r.doc && r.doc.figures) ?? 0, figureError: r.figureError || undefined },
           error: r.status === 'error' ? r.error : null,
         });
       }
@@ -198,7 +199,7 @@ export async function startServer({
     let value;
     try {
       const info = await engine.embedder.describe();
-      value = { state: 'up', model: info.model, dim: info.dim ?? engine.knownDim(), window: info.ctx };
+      value = { state: 'up', model: info.model, dim: info.dim ?? engine.knownDim(), window: info.ctx, vision: Boolean(info.vision) };
     } catch (e) {
       value = { state: e.code === 'model-missing' ? 'model-missing' : e.code === 'ollama-down' ? 'down' : 'error', model: engine.embedder.model, error: e.message };
     }
@@ -250,6 +251,8 @@ export async function startServer({
         ollama: await ollamaState(), agents: agentState(), settings: settings(),
         totals: engine.store.totals(), queue: queue.map((j) => j.label), ingesting: current ? current.label : null,
         pool: pool.list(), conversations: engine.store.conversations().length,
+        // Documents embedded another way: search refuses them until they are re-embedded.
+        stale: engine.store.staleDocs(engine.embedder.signature).length,
       });
     }
 
@@ -412,7 +415,10 @@ export async function startServer({
       let stale = 0;
       if (b.embedModel !== undefined || b.queryPrefix !== undefined || b.docPrefix !== undefined) {
         const s = engine.settings();
-        const r = await engine.setModel({ model: b.embedModel ?? s.model, queryPrefix: b.queryPrefix ?? s.queryPrefix, docPrefix: b.docPrefix ?? s.docPrefix });
+        const model = b.embedModel ?? s.model;
+        // A new model brings its own prefixes unless the request names some (t-64e566c572).
+        const keep = model === s.model;
+        const r = await engine.setModel({ model, queryPrefix: b.queryPrefix ?? (keep ? s.queryPrefix : undefined), docPrefix: b.docPrefix ?? (keep ? s.docPrefix : undefined) });
         stale = r.stale;
         ollama = { at: 0, value: null };
       }

@@ -38,7 +38,8 @@ test('describe reads the context length and the size Ollama reports, and refuses
     model_info: { 'general.architecture': 'nomic-bert-moe', 'nomic-bert-moe.embedding_length': 768, 'nomic-bert-moe.context_length': 512 },
   } }));
   // The size is learned from a real vector, never taken from /api/show (t-ab9179da22).
-  assert.deepEqual(await new Embedder({ fetch: show(['embedding']).fetch }).describe(), { model: DEFAULT_MODEL, dim: null, reportedDim: 768, ctx: 512 });
+  assert.deepEqual(await new Embedder({ fetch: show(['embedding']).fetch }).describe(), { model: DEFAULT_MODEL, dim: null, reportedDim: 768, ctx: 512, vision: false });
+  assert.equal((await new Embedder({ fetch: show(['embedding', 'vision']).fetch }).describe()).vision, true, 'Ollama lists vision for a model that embeds images');
   await assert.rejects(new Embedder({ model: 'llama3', fetch: show(['completion']).fetch }).describe(), (e) => e.code === 'not-embedding');
 });
 
@@ -79,11 +80,15 @@ test('the signature changes with the model and the document prefix, not the quer
 
 /* Against the real Ollama, when it is running. */
 const live = await fetch(OLLAMA + '/api/version').then((r) => r.ok).catch(() => false);
-const hasNomic = live && await fetch(OLLAMA + '/api/show', { method: 'POST', body: JSON.stringify({ model: DEFAULT_MODEL }) }).then((r) => r.ok).catch(() => false);
+const has = async (model) => live && fetch(OLLAMA + '/api/show', { method: 'POST', body: JSON.stringify({ model }) }).then((r) => r.ok).catch(() => false);
+const NOMIC = 'nomic-embed-text-v2-moe';
+const hasNomic = await has(NOMIC);
+const hasGemma = await has(DEFAULT_MODEL);
+const unload = (model) => fetch(OLLAMA + '/api/embed', { method: 'POST', body: JSON.stringify({ model, input: [], keep_alive: 0 }) }).catch(() => {});
 
 test('live: nomic reports 768 dimensions and a 512-token window, and embeds normalised vectors', { skip: !hasNomic && 'Ollama or the model is not available' }, async () => {
-  const e = new Embedder();
-  assert.deepEqual(await e.describe(), { model: DEFAULT_MODEL, dim: null, reportedDim: 768, ctx: 512 });
+  const e = new Embedder({ model: NOMIC });
+  assert.deepEqual(await e.describe(), { model: NOMIC, dim: null, reportedDim: 768, ctx: 512, vision: false });
   const [v] = await e.embedDocuments(['The invoice was paid on 3 March.']);
   assert.equal(v.length, 768);
   assert.equal(e.dim, 768);
@@ -91,7 +96,28 @@ test('live: nomic reports 768 dimensions and a 512-token window, and embeds norm
 });
 
 test('live: a chunk too long for nomic fails by name instead of being cut', { skip: !hasNomic && 'Ollama or the model is not available' }, async () => {
-  await assert.rejects(new Embedder().embedDocuments(['word '.repeat(3000)]), (e) => e.code === 'too-long');
+  await assert.rejects(new Embedder({ model: NOMIC }).embedDocuments(['word '.repeat(3000)]), (e) => e.code === 'too-long');
+  await unload(NOMIC);
+});
+
+/* What step 0 found about embeddinggemma-2 in Ollama: /api/show reports 512
+ * but vectors are 768 (t-064b29db7b), and an image goes in as { image }
+ * (t-a8dc8ee656). */
+test('live: embeddinggemma-2 reports 512 but returns 768 for text and images alike', { skip: !hasGemma && 'Ollama or embeddinggemma-2:440m is not available' }, async () => {
+  const { createCanvas } = await import('@napi-rs/canvas');
+  const c = createCanvas(300, 200);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 300, 200);
+  ctx.fillStyle = '#d9821c'; ctx.fillRect(20, 40, 200, 30); ctx.fillRect(20, 110, 120, 30);
+  const e = new Embedder();
+  const info = await e.describe();
+  assert.deepEqual([info.reportedDim, info.vision], [512, true]);
+  const stats = {};
+  const [text] = await e.embedDocuments(['A bar chart of costs.'], stats);
+  const [img] = await e.embedImages([c.toBuffer('image/png')], stats);
+  assert.deepEqual([text.length, img.length, e.dim], [768, 768, 768]);
+  assert.ok(stats.imageMs > 0 && stats.images === 1, 'images are timed apart from text');
+  await unload(DEFAULT_MODEL);
 });
 
 test('live: a model that is not downloaded is named', { skip: !live && 'Ollama is not running' }, async () => {
