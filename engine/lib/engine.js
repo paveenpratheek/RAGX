@@ -20,7 +20,7 @@ import { extract, ExtractError, SUPPORTED } from './extract/index.js';
 import { chunk, targetFor } from './chunk.js';
 import { Embedder, EmbedError, readSettings, writeSettings, signature, chunkInput, defaultPrefixes } from './embed.js';
 import { VectorIndex } from './vectors.js';
-import { hybridSearch } from './search.js';
+import { hybridSearch, FIGURE_FLOOR } from './search.js';
 
 export class EngineError extends Error {
   constructor(code, message) {
@@ -49,7 +49,10 @@ export class Engine {
     return new Engine(dir, options);
   }
 
-  constructor(dir, { makeEmbedder = (s) => new Embedder(s) } = {}) {
+  /* figureFloor: how close a question must come to a figure - measured for
+   * embeddinggemma-2 (t-525cbbd9a7); tests with a stand-in model lower it. */
+  constructor(dir, { makeEmbedder = (s) => new Embedder(s), figureFloor = FIGURE_FLOOR } = {}) {
+    this.figureFloor = figureFloor;
     this.dir = dir;
     this.store = new Store(path.join(dir, 'rag.db'));
     // An index from before the size was kept per model measured it with the model set then.
@@ -59,6 +62,7 @@ export class Engine {
     this.makeEmbedder = makeEmbedder;
     this.embedder = this.withKnownDim(makeEmbedder(readSettings(this.store)));
     this.index = null;
+    this.figureIndex = undefined; // built on first search; undefined until then
     this.stopRequested = false; // set by a server stopping; ingest ends at its next step
   }
 
@@ -91,6 +95,7 @@ export class Engine {
    * store, replacing what an earlier reading left. */
   saveFigures(docId, figures) {
     const dir = this.figuresDir(docId);
+    this.figureIndex = undefined;
     fs.rmSync(dir, { recursive: true, force: true });
     if (figures.length) fs.mkdirSync(dir, { recursive: true });
     const rows = figures.map((f, i) => {
@@ -269,7 +274,21 @@ export class Engine {
     return index;
   }
 
+  /* Figures are few beside chunks, so their index is simply built again on
+   * the next search whenever any document's figures change. */
+  loadFigureIndex() {
+    if (this.figureIndex !== undefined) return this.figureIndex;
+    let index = null;
+    for (const { id, vector } of this.store.figureVectors(this.embedder.signature)) {
+      if (!index) index = new VectorIndex(vector.length);
+      index.add(id, vector);
+    }
+    this.figureIndex = index;
+    return index;
+  }
+
   indexAdd(docId) {
+    this.figureIndex = undefined;
     if (!this.index) return;
     for (const { id, vector } of this.store.docVectors(docId)) this.index.add(id, vector);
   }
@@ -285,10 +304,11 @@ export class Engine {
         `${stale.length} document(s) were embedded with ${stale[0].embedded_with}, not ${this.embedder.signature} - run "reembed" first.`);
     }
     const index = this.loadIndex();
+    const figureIndex = this.loadFigureIndex();
     let queryVector = null;
     let warning = null;
     const stats = {};
-    if (index) {
+    if (index || figureIndex) {
       try {
         queryVector = await this.embedder.embedQuery(question, stats);
       } catch (e) {
@@ -297,7 +317,7 @@ export class Engine {
       }
     }
     const t = Date.now();
-    const passages = hybridSearch({ store: this.store, index, question, queryVector, k });
+    const passages = hybridSearch({ store: this.store, index, figureIndex, question, queryVector, k, figureFloor: this.figureFloor });
     return { passages, warning, timings: { embedMs: stats.ms || 0, loadMs: stats.loadMs || 0, searchMs: Date.now() - t } };
   }
 
@@ -314,6 +334,7 @@ export class Engine {
     writeSettings(this.store, { model, queryPrefix, docPrefix });
     this.embedder = next;
     this.index = null;
+    this.figureIndex = undefined;
     return { ...info, stale: this.store.staleDocs(signature({ model, docPrefix })).length };
   }
 
@@ -339,6 +360,7 @@ export class Engine {
     if (this.index) this.index.remove(chunkIds);
     fs.rmSync(this.fileOf(doc), { force: true });
     fs.rmSync(this.figuresDir(id), { recursive: true, force: true });
+    this.figureIndex = undefined;
     return doc;
   }
 

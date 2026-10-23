@@ -1,5 +1,7 @@
 /* Hybrid search: vector search and keyword search, each taking its own best
- * 40, merged by reciprocal rank fusion (t-c6c48895e7).
+ * 40, merged by reciprocal rank fusion (t-c6c48895e7). Figures are searched
+ * beside them, the question's vector against the figures' (t-d3dd407413),
+ * so a chart can be found by describing it.
  *
  * Both are needed. Vector search finds a passage that says the same thing in
  * other words; keyword search finds the one that holds the exact invoice
@@ -78,13 +80,47 @@ function joinNeighbours(chosen) {
   return passages.sort((a, b) => b.score - a.score);
 }
 
-/* store: the Store; index: a VectorIndex (or null when nothing is embedded);
- * queryVector: the question already embedded. */
-export function hybridSearch({ store, index, question, queryVector, k = 8, perDoc = 3, pool = 40 }) {
+const flat = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+/* Where a figure belongs in the text: its caption, else the text beside it -
+ * the first 60 characters, enough to be unmistakable. */
+function anchorKey(f) {
+  const key = flat(f.caption || f.anchor).slice(0, 60);
+  return key.length >= 12 ? key : null;
+}
+
+/* What a figure says of itself as a source: its caption, or that it has none
+ * and what it sits beside. */
+export function figureText(f) {
+  if (f.caption) return f.caption;
+  const what = f.kind === 'image' ? 'A picture' : 'A figure';
+  return `${what} with no caption${f.anchor ? `, beside: "${f.anchor.slice(0, 160)}"` : ''}`;
+}
+
+const figureRef = (f) => ({ figureId: f.id, kind: f.kind, page: f.page, caption: f.caption });
+
+/* How close a question must come to a figure for the figure to count as
+ * found. Measured with embeddinggemma-2 on the user's documents: questions
+ * describing a figure put it at 0.73-0.81, unrelated questions put the best
+ * figure at 0.59-0.65 (t-a5489543e0, t-525cbbd9a7). Figures are kept out of
+ * the text fusion: ranked in one list where a passage is ranked in two, they
+ * were crowded out of every result (t-73abd85797). */
+export const FIGURE_FLOOR = 0.68;
+
+/* store: the Store; index and figureIndex: VectorIndexes (or null when nothing
+ * is embedded); queryVector: the question already embedded. Returns the text
+ * passages best first, each with the figures in it that the question reaches
+ * (at most perPassage), then up to maxFigures figures found on their own,
+ * marked by figureId (t-d3dd407413). */
+export function hybridSearch({ store, index, figureIndex = null, question, queryVector, k = 8, perDoc = 3, pool = 40,
+  maxFigures = 3, perPassage = 2, figureFloor = FIGURE_FLOOR }) {
   const vector = index && queryVector ? index.search(queryVector, pool) : [];
   const match = buildMatch(question);
   const keyword = match ? store.keywordSearch(match, pool) : [];
   const fused = fuse([vector, keyword]);
+  const pictures = figureIndex && queryVector ? figureIndex.search(queryVector, pool) : [];
+  const rank = new Map(pictures.map((h, i) => [h.id, { rank: i + 1, score: h.score }]));
+  const reached = (id) => (rank.get(id)?.score ?? -1) >= figureFloor;
 
   /* At most perDoc chunks from one document, so one long document cannot
    * crowd every other source out of the answer (t-45a2280d8f). */
@@ -99,5 +135,35 @@ export function hybridSearch({ store, index, question, queryVector, k = 8, perDo
     perDocCount.set(c.doc_id, n + 1);
     chosen.push({ ...c, fused: f });
   }
-  return joinNeighbours(chosen);
+  const passages = joinNeighbours(chosen);
+
+  /* A figure goes with the passage that holds its caption or the text
+   * beside it, so a chart comes back with the paragraph that explains it -
+   * the ones the question reaches, best first, since one long passage can
+   * hold a dozen short captions. Without a question vector (keyword search
+   * only) the first ones go. A figure found on its own and sitting in a
+   * passage found too is that passage's, not a second result. */
+  const byDoc = new Map();
+  const figuresOf = (docId) => { if (!byDoc.has(docId)) byDoc.set(docId, store.docFigures(docId)); return byDoc.get(docId); };
+  const attached = new Set();
+  for (const p of passages) {
+    const text = flat(p.text);
+    let inside = figuresOf(p.docId).filter((f) => { const key = anchorKey(f); return key && text.includes(key); });
+    if (pictures.length) inside = inside.filter((f) => reached(f.id)).sort((a, b) => rank.get(a.id).rank - rank.get(b.id).rank);
+    p.figures = inside.slice(0, perPassage).map(figureRef);
+    for (const f of p.figures) attached.add(f.figureId);
+  }
+  const alone = [];
+  for (const h of pictures) {
+    if (alone.length === maxFigures || h.score < figureFloor) break;
+    if (attached.has(h.id)) continue;
+    const f = store.figure(h.id);
+    if (!f) continue;
+    alone.push({
+      docId: f.doc_id, docName: f.doc_name, heading: f.heading, pageFrom: f.page, pageTo: f.page,
+      text: figureText(f), chunkIds: [], figureId: f.id, kind: f.kind, figures: [],
+      score: h.score, ranks: { figure: rank.get(h.id).rank },
+    });
+  }
+  return [...passages.sort((a, b) => b.score - a.score), ...alone];
 }

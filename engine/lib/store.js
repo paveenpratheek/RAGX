@@ -69,14 +69,14 @@ export class Store {
       setSession: p('update conversations set session = ?, model = coalesce(?, model), updated_at = ? where id = ?'),
       addMessage: p('insert into messages (conversation_id, role, text, cited, unknown, created_at) values (?, ?, ?, ?, ?, ?)'),
       messages: p('select * from messages where conversation_id = ? order by id'),
-      addSource: p(`insert into sources (conversation_id, n, chunk_ids, doc_id, doc_name, heading, page_from, page_to, text)
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+      addSource: p(`insert into sources (conversation_id, n, chunk_ids, doc_id, doc_name, heading, page_from, page_to, text, figure_id, figures)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
       sources: p('select * from sources where conversation_id = ? order by n'),
       deleteConversation: p('delete from conversations where id = ?'),
       deleteFigures: p('delete from figures where doc_id = ?'),
       addFigure: p(`insert into figures (doc_id, ord, kind, page, box, caption, heading, anchor, file, width, height)
                     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-      docFigures: p('select * from figures where doc_id = ? order by ord'),
+      docFigures: p('select f.*, d.name doc_name from figures f join documents d on d.id = f.doc_id where f.doc_id = ? order by f.ord'),
       figure: p('select f.*, d.name doc_name from figures f join documents d on d.id = f.doc_id where f.id = ?'),
       unembeddedFigures: p(`select f.id, f.file from figures f left join figure_vectors v on v.figure_id = f.id
                             where f.doc_id = ? and v.figure_id is null order by f.ord`),
@@ -224,7 +224,7 @@ export class Store {
     transaction(this.db, () => {
       for (const s of sources) {
         this.q.addSource.run(conversationId, s.n, JSON.stringify(s.chunkIds), s.docId ?? null, s.docName,
-          s.heading || '', s.pageFrom ?? null, s.pageTo ?? null, s.text);
+          s.heading || '', s.pageFrom ?? null, s.pageTo ?? null, s.text, s.figureId ?? null, s.figures && s.figures.length ? JSON.stringify(s.figures) : null);
       }
     });
   }
@@ -233,6 +233,7 @@ export class Store {
     return this.q.sources.all(conversationId).map((s) => ({
       n: s.n, chunkIds: JSON.parse(s.chunk_ids), docId: s.doc_id, docName: s.doc_name,
       heading: s.heading, pageFrom: s.page_from, pageTo: s.page_to, text: s.text,
+      figureId: s.figure_id ?? null, figures: s.figures ? JSON.parse(s.figures) : [],
     }));
   }
 

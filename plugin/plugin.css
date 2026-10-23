@@ -243,3 +243,9 @@ progress { width: 120px; height: 6px; vertical-align: middle; accent-color: var(
   .form label { grid-template-columns: 1fr; gap: 4px; }
   .status { display: none; }
 }
+
+/* figures in the source panel and the tracker */
+.fig { margin: 10px 0 0; display: flex; flex-direction: column; gap: 4px; white-space: normal; }
+.fig img { max-width: 100%; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+.fig img:not([src]) { min-height: 80px; background: var(--soft); }
+.fig figcaption { font-size: 12px; color: var(--muted); }

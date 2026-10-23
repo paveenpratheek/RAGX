@@ -130,4 +130,16 @@ export class Engine {
     const res = await this.request('GET', '/api/events', { signal });
     yield* readLines(res);
   }
+
+  /* A figure's image as an object URL: an <img> cannot send the token, so it
+   * is fetched like any request; kept per figure for the page's lifetime
+   * (t-9bea9e80da). */
+  async figureUrl(id) {
+    this.figures = this.figures || new Map();
+    if (!this.figures.has(id)) {
+      this.figures.set(id, this.request('GET', `/api/figures/${id}/image`).then((r) => r.blob()).then((b) => URL.createObjectURL(b))
+        .catch((e) => { this.figures.delete(id); throw e; }));
+    }
+    return this.figures.get(id);
+  }
 }

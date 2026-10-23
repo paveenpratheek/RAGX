@@ -147,7 +147,10 @@ export async function startServer({
     const source = !client ? 'other' : client === 'plugin' ? 'you' : client.startsWith('mcp') ? 'agent' : 'other';
     return { source, client };
   };
-  const passageDetail = (p) => ({ n: p.n, docName: p.docName, heading: p.heading, pageFrom: p.pageFrom, pageTo: p.pageTo, score: p.score, chunkIds: p.chunkIds, text: p.text });
+  const figureView = (f) => ({ id: f.id, docId: f.doc_id, docName: f.doc_name, kind: f.kind, page: f.page, caption: f.caption,
+    heading: f.heading, anchor: f.anchor, width: f.width, height: f.height });
+  const passageDetail = (p) => ({ n: p.n, docName: p.docName, heading: p.heading, pageFrom: p.pageFrom, pageTo: p.pageTo, score: p.score, chunkIds: p.chunkIds, text: p.text,
+    figureId: p.figureId ?? undefined, figures: p.figures && p.figures.length ? p.figures : undefined });
 
   const queue = [];
   let current = null;
@@ -323,6 +326,29 @@ export async function startServer({
       const out = { docId: c.doc_id, docName: c.doc_name, chunk: view(c), before: view(before), after: view(after) };
       tracker.record({ ...whoIs(req), kind: 'passage', question: `${c.doc_name} #${c.id}`, ms: 0, results: 1, detail: out });
       return json(200, out);
+    }
+
+    /* A figure: what it is and where it sits, and its image. The page fetches
+     * images with the token like any request and shows them as blobs; an
+     * agent fetching one is a call worth tracking (t-9bea9e80da). */
+    if ((p = m('GET', /^\/api\/figures\/(\d+)$/))) {
+      const f = engine.store.figure(Number(p[0]));
+      if (!f) throw new HttpError(404, 'not-found', 'No such figure.');
+      return json(200, figureView(f));
+    }
+    if ((p = m('GET', /^\/api\/figures\/(\d+)\/image$/))) {
+      const f = engine.store.figure(Number(p[0]));
+      const file = f && engine.figurePath(f);
+      if (!f || !fs.existsSync(file)) throw new HttpError(404, 'not-found', 'No such figure.');
+      const who = whoIs(req);
+      if (who.source === 'agent') tracker.record({ ...who, kind: 'figure', question: `${f.doc_name} figure ${f.id}`, ms: 0, results: 1, detail: figureView(f) });
+      res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'private, max-age=3600' });
+      res.end(fs.readFileSync(file));
+      return;
+    }
+    if ((p = m('GET', /^\/api\/docs\/(\d+)\/figures$/))) {
+      if (!engine.store.doc(Number(p[0]))) throw new HttpError(404, 'not-found', 'No such document.');
+      return json(200, { figures: engine.store.docFigures(Number(p[0])).map(figureView) });
     }
 
     if (m('POST', /^\/api\/search$/)) {

@@ -329,7 +329,20 @@ async function warm() {
 
 function sourceLabel(s) {
   const pages = s.pageFrom == null ? '' : s.pageFrom === s.pageTo ? `, p.${s.pageFrom}` : `, pp.${s.pageFrom}-${s.pageTo}`;
-  return `[${s.n}] ${s.docName}${pages}${s.heading ? ' - ' + s.heading : ''}`;
+  if (s.figureId) return `[${s.n}] ${s.docName}${pages} - figure`;
+  return `[${s.n}] ${s.docName}${pages}${s.heading ? ' - ' + s.heading : ''}${s.figures && s.figures.length ? ' + figure' : ''}`;
+}
+
+/* A figure in a panel: its image, fetched with the token, and its caption.
+ * The caption is set as text, like every word from a document (t-1c6e343d0e). */
+function figureBox(id, caption) {
+  const box = el('figure', 'fig');
+  const img = el('img');
+  img.alt = caption || 'Figure';
+  box.appendChild(img);
+  if (caption) box.appendChild(el('figcaption', null, caption));
+  engine.figureUrl(id).then((url) => { img.src = url; }).catch(() => box.replaceChildren(el('div', 'note', 'The figure could not be loaded - its document may have been removed.')));
+  return box;
 }
 
 function citeButton(n) {
@@ -483,8 +496,9 @@ function openSource(n) {
   $('source').hidden = false;
   $('source-title').textContent = `[${s.n}] ${s.docName}`;
   $('source-where').textContent = [s.pageFrom == null ? '' : s.pageFrom === s.pageTo ? `page ${s.pageFrom}` : `pages ${s.pageFrom}-${s.pageTo}`, s.heading].filter(Boolean).join(' · ');
-  const mark = el('mark', null, s.text);
-  $('source-body').replaceChildren(mark);
+  // A figure shows as its image; a passage shows its text, then the figures beside it.
+  if (s.figureId) $('source-body').replaceChildren(figureBox(s.figureId, s.text));
+  else $('source-body').replaceChildren(el('mark', null, s.text), ...(s.figures || []).map((f) => figureBox(f.figureId, f.caption)));
   $('source-more').hidden = !s.chunkIds || !s.chunkIds.length;
 }
 
@@ -563,7 +577,7 @@ async function saveSettings(ev) {
 
 const RANGES = { hour: 3600e3, day: 86400e3, week: 7 * 86400e3, month: 30 * 86400e3 };
 const WHO = { you: 'You', agent: 'Agent', cli: 'Command line', other: 'Other' };
-const KIND = { search: 'Search', ask: 'Ask', passage: 'Passage', documents: 'Documents', ingest: 'Ingest', reindex: 'Re-index', reembed: 'Re-embed', resume: 'Resume' };
+const KIND = { search: 'Search', ask: 'Ask', passage: 'Passage', figure: 'Figure', documents: 'Documents', ingest: 'Ingest', reindex: 'Re-index', reembed: 'Re-embed', resume: 'Resume' };
 
 function fmtMs(ms) {
   if (ms == null) return '-';
@@ -760,7 +774,11 @@ function where(p) { return p.pageFrom == null ? '' : p.pageFrom === p.pageTo ? `
 function passageBox(p, label) {
   const box = el('div', 'passage');
   box.appendChild(el('div', 'where', `${label || (p.n ? `[${p.n}] ` : '')}${p.docName}${where(p)}${p.heading ? ' - ' + p.heading : ''}${p.score != null ? ` · score ${Number(p.score).toFixed(3)}` : ''}`));
-  box.appendChild(document.createTextNode(p.text));
+  if (p.figureId) box.appendChild(figureBox(p.figureId, p.text));
+  else {
+    box.appendChild(document.createTextNode(p.text));
+    for (const f of p.figures || []) box.appendChild(figureBox(f.figureId, f.caption));
+  }
   return box;
 }
 

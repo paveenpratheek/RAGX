@@ -345,3 +345,27 @@ test('a cited passage comes with the text around it, and a removed document is g
   assert.equal((await call(`/api/docs/${doc.id}`, { method: 'DELETE' })).status, 200);
   assert.equal((await call(`/api/chunks/${passages[0].chunkIds[0]}`)).status, 404);
 });
+
+test('a figure is served as its details and its PNG, and an agent fetching one is tracked', async (t) => {
+  const { makePdf, barChartPage } = await import('./fixtures.js');
+  const { s, call } = await serve(t);
+  const ready = waitFor(call, (e) => e.type === 'doc');
+  await ready.connected;
+  const pdf = makePdf([[{ text: 'Costs', size: 20, y: 760 }, ...barChartPage({ top: 700 })]]);
+  assert.equal((await call('/api/docs', { method: 'POST', raw: true, body: pdf, headers: { 'x-file-name': 'costs.pdf' } })).status, 202);
+  const { doc } = await ready;
+  assert.equal(doc.figures, 1);
+
+  const { figures } = await (await call(`/api/docs/${doc.id}/figures`)).json();
+  assert.deepEqual(figures.map((f) => [f.docName, f.kind, f.page, f.caption]), [['costs.pdf', 'drawing', 1, 'Figure 1 - Costs by region in 2024.']]);
+  const id = figures[0].id;
+  assert.equal((await (await call(`/api/figures/${id}`)).json()).caption, 'Figure 1 - Costs by region in 2024.');
+  const img = await call(`/api/figures/${id}/image`, { headers: { 'x-rag-client': 'mcp:claude-code/2.1.308 cwd=E:\work' } });
+  assert.equal(img.headers.get('content-type'), 'image/png');
+  const bytes = Buffer.from(await img.arrayBuffer());
+  assert.equal(bytes.readUInt32BE(0), 0x89504e47, 'a PNG');
+  await call(`/api/figures/${id}/image`, { headers: { 'x-rag-client': 'plugin' } });
+  assert.deepEqual(s.tracker.calls({ kind: 'figure' }).map((c) => c.source), ['agent'], 'the page showing a figure is not a call');
+  assert.equal((await call('/api/figures/999999/image')).status, 404);
+  assert.equal((await call(`/api/figures/${id}/image`, { token: 'wrong' })).status, 401);
+});

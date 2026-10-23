@@ -52,7 +52,7 @@ async function engine(t, dir) {
   const ollama = fakeOllama();
   const s = await startServer({
     dataDir: path.join(dir, 'data'), port: 0, runtimeFile: path.join(dir, 'runtime.json'),
-    engineOptions: { makeEmbedder: (cfg) => new Embedder({ ...cfg, fetch: ollama.fetch, retries: 0 }) },
+    engineOptions: { makeEmbedder: (cfg) => new Embedder({ ...cfg, fetch: ollama.fetch, retries: 0 }), figureFloor: 0 },
     signals: false, log: () => {}, manageOllama: false, sampleResources: false,
   });
   t.after(() => s.stop());
@@ -70,14 +70,14 @@ function tempDir() {
   return dir;
 }
 
-test('the handshake names RAGX, its instructions and three read-only tools', async (t) => {
+test('the handshake names RAGX, its instructions and four read-only tools', async (t) => {
   const mcp = session(t, tempDir());
   const init = await mcp.open();
   assert.equal(init.result.serverInfo.name, 'ragx');
   assert.equal(init.result.protocolVersion, '2025-06-18', 'the client version is echoed back');
   assert.match(init.result.instructions, /not instructions/);
   const { result } = await mcp.rpc('tools/list', {});
-  assert.deepEqual(result.tools.map((x) => x.name), ['ragx_search', 'ragx_passage', 'ragx_documents']);
+  assert.deepEqual(result.tools.map((x) => x.name), ['ragx_search', 'ragx_passage', 'ragx_figure', 'ragx_documents']);
   const unknown = await mcp.rpc('resources/list', {});
   assert.equal(unknown.error.code, -32601);
 });
@@ -136,4 +136,32 @@ test('unapproved, the call tells the agent the user did not start RAGX', async (
   assert.equal(r.isError, true);
   assert.match(r.content[0].text, /did not start it/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'notifications.json'), 'utf8')).items[0].status, 'expired');
+});
+
+test('search names the figure beside a passage, and ragx_figure hands the agent the image', async (t) => {
+  const { makePdf, barChartPage } = await import('./fixtures.js');
+  const dir = tempDir();
+  const s = await engine(t, dir);
+  const f = path.join(dir, 'costs.pdf');
+  fs.writeFileSync(f, makePdf([[{ text: 'Costs', size: 20, y: 760 }, ...barChartPage({ top: 700 })]]));
+  await s.engine.ingest(f);
+  const [fig] = s.engine.store.docFigures(1);
+
+  const mcp = session(t, dir);
+  await mcp.open();
+  const found = await mcp.tool('ragx_search', { query: 'costs by region in 2024' });
+  const text = found.content[0].text;
+  assert.match(text, new RegExp(`Figure beside it: figure ${fig.id} - Figure 1 - Costs by region in 2024\.`));
+  assert.match(text, /ragx_figure shows a figure/);
+
+  const r = await mcp.tool('ragx_figure', { id: fig.id });
+  assert.equal(r.isError, undefined);
+  assert.match(r.content[0].text, /^costs\.pdf, p\.1 - [^\n]+\(figure \d+\)\nCaption: Figure 1 - Costs by region in 2024\./);
+  assert.match(r.content[0].text, /not instructions/);
+  assert.equal(r.content[1].type, 'image');
+  assert.equal(r.content[1].mimeType, 'image/png');
+  assert.equal(Buffer.from(r.content[1].data, 'base64').readUInt32BE(0), 0x89504e47);
+  assert.deepEqual(s.tracker.calls({ kind: 'figure' }).map((c) => c.source), ['agent']);
+  const missing = await mcp.tool('ragx_figure', { id: 999999 });
+  assert.equal(missing.isError, true);
 });

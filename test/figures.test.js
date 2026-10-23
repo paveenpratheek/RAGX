@@ -200,3 +200,59 @@ test('figures are embedded after the text when the model can see images, and wai
   const img = await e.ingest(file('photo.png', png(500, 400)));
   assert.deepEqual([img.doc.chunks, e.store.docFigureVectors(img.doc.id).length], [0, 1]);
 });
+
+/* Step 3: search reaches figures, and a figure travels with its passage (t-d3dd407413). */
+function figureEngine(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-figsearch-'));
+  const o = fakeOllama();
+  // The stand-in model's scores are not gemma's, so any figure it reaches counts.
+  const e = Engine.open(path.join(root, 'data'), { makeEmbedder: (s) => new Embedder({ ...s, fetch: o.fetch, retries: 0 }), figureFloor: 0 });
+  t.after(() => { e.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  const file = (name, data) => { const f = path.join(root, name); fs.writeFileSync(f, data); return f; };
+  return { e, file };
+}
+
+test('a figure the question does not reach is not shown, and a passage carries at most two', async (t) => {
+  const { e, file } = figureEngine(t);
+  // Three captioned pictures in one short Word section, so one passage holds all three captions.
+  const docx = makeDocx([
+    w.p('Antenna results', 'Heading1'),
+    w.picture('rId1'), w.p('Fig. 1 Radiation pattern with director'),
+    w.picture('rId2'), w.p('Fig. 2 Radiation pattern without director'),
+    w.picture('rId3'), w.p('Fig. 3 Radiation pattern without reflector'),
+  ], { parts: { rId1: { name: 'media/a.png', data: png(300, 300, '#a00') }, rId2: { name: 'media/b.png', data: png(300, 300, '#0a0') }, rId3: { name: 'media/c.png', data: png(300, 300, '#00a') } } });
+  await e.ingest(file('antenna.docx', docx));
+  const all = (await e.search('radiation pattern')).passages;
+  const text = all.filter((p) => !p.figureId);
+  assert.equal(text.length, 1);
+  assert.equal(text[0].figures.length, 2, 'the two the question reaches best, not all three');
+  assert.equal(all.filter((p) => p.figureId).length, 1, 'the third, reached too, is a result of its own');
+  e.figureFloor = 2; // no cosine reaches 2
+  const none = (await e.search('radiation pattern')).passages;
+  assert.deepEqual([none[0].figures.length, none.filter((p) => p.figureId).length], [0, 0]);
+});
+
+test('a passage holding a figure\'s caption brings the figure with it', async (t) => {
+  const { e, file } = figureEngine(t);
+  const r = await e.ingest(file('costs.pdf', makePdf([[{ text: 'Costs', size: 20, y: 760 }, ...barChartPage({ top: 700 }),
+    { text: 'Asia spent the most on hosting, Europe the least.', y: 470 }]])));
+  const [fig] = e.store.docFigures(r.doc.id);
+  const { passages } = await e.search('costs by region in 2024');
+  const withFigure = passages.find((p) => p.figures.length);
+  assert.ok(withFigure, 'the passage with the caption carries the figure');
+  assert.deepEqual(withFigure.figures, [{ figureId: fig.id, kind: 'drawing', page: 1, caption: 'Figure 1 - Costs by region in 2024.' }]);
+  assert.ok(!passages.some((p) => p.figureId === fig.id), 'a figure beside a passage found is not a second result');
+});
+
+test('a figure found on its own is a result of its own, saying what it is', async (t) => {
+  const { e, file } = figureEngine(t);
+  await e.ingest(file('notes.md', '# Notes\n\nMeeting notes about the office move and the parking rules.\n'));
+  const img = await e.ingest(file('photo.png', png(600, 400)));
+  const [fig] = e.store.docFigures(img.doc.id);
+  // The stand-in model gives a picture the word "picture"; a question with that word reaches it.
+  const { passages } = await e.search('a picture of the office');
+  const hit = passages.find((p) => p.figureId);
+  assert.ok(hit, JSON.stringify(passages.map((p) => p.docName)));
+  assert.deepEqual([hit.figureId, hit.docName, hit.text, hit.chunkIds], [fig.id, 'photo.png', 'A picture with no caption', []]);
+  assert.ok(hit.ranks.figure >= 1);
+});

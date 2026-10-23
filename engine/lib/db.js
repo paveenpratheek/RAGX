@@ -161,8 +161,10 @@ create table if not exists samples_min (
 `;
 
 /* Columns added after their table: [table, column, type]. image_ms is the
- * time a call spent embedding figures, apart from text (t-5b3586cf20). */
-const COLUMNS = [['calls', 'image_ms', 'integer']];
+ * time a call spent embedding figures, apart from text (t-5b3586cf20). A
+ * source's figure_id is the figure it is; figures, as JSON, the ones beside
+ * a text source (t-0b97deb139). */
+const COLUMNS = [['calls', 'image_ms', 'integer'], ['sources', 'figure_id', 'integer'], ['sources', 'figures', 'text']];
 
 /* `lead` is how many characters at the start of a chunk repeat the end of the
  * one before it - the overlap. Search joins neighbouring chunks by dropping

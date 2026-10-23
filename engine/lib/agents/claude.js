@@ -22,8 +22,18 @@ export function args({ model, system, resume }) {
   return a;
 }
 
-export function input(prompt) {
-  return JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: prompt }] } }) + '\n';
+/* images: [{ label, png }] - each figure goes before the text it is named in,
+ * as an image block after a line saying which source it is. Claude in this
+ * locked-down mode takes them: step 0 had it read $5.03 off a bar chart
+ * (t-a88b94fd27, t-e0ef9c734c). */
+export function input(prompt, images = []) {
+  const content = [];
+  for (const im of images) {
+    content.push({ type: 'text', text: im.label });
+    content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: Buffer.from(im.png).toString('base64') } });
+  }
+  content.push({ type: 'text', text: prompt });
+  return JSON.stringify({ type: 'user', message: { role: 'user', content } }) + '\n';
 }
 
 function classify(message) {
@@ -34,7 +44,7 @@ function classify(message) {
   return new AgentError('failed', `Claude did not answer: ${message}`);
 }
 
-export async function ask({ prompt, system, model = DEFAULT_MODEL, resume = null, cwd, executable = null,
+export async function ask({ prompt, images = [], system, model = DEFAULT_MODEL, resume = null, cwd, executable = null,
   prefixArgs = [], onDelta = () => {}, signal, timeoutMs = 180_000 /* t-293b4573a1 */ }) {
   const exe = executable || findExecutable('claude');
   const state = { init: null, result: null, streamed: false };
@@ -42,7 +52,7 @@ export async function ask({ prompt, system, model = DEFAULT_MODEL, resume = null
   const { code, stderr } = await runAgent({
     executable: exe,
     args: [...prefixArgs, ...args({ model, system, resume })],
-    input: input(prompt),
+    input: input(prompt, images),
     cwd,
     timeoutMs,
     signal,

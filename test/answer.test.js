@@ -32,7 +32,7 @@ const lease = '# Lease\n\nThe tenancy runs for two years from January.\n\n## Ren
 function setup(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-answer-'));
   const ollama = fakeOllama();
-  const engine = Engine.open(path.join(root, 'data'), { makeEmbedder: (s) => new Embedder({ ...s, fetch: ollama.fetch, retries: 0 }) });
+  const engine = Engine.open(path.join(root, 'data'), { makeEmbedder: (s) => new Embedder({ ...s, fetch: ollama.fetch, retries: 0 }), figureFloor: 0 });
   t.after(() => { engine.close(); fs.rmSync(root, { recursive: true, force: true }); });
   const file = (name, text) => { const f = path.join(root, name); fs.writeFileSync(f, text); return f; };
   const askWith = (behaviour, opts) => {
@@ -120,4 +120,26 @@ test('the model comes from the question, then the setting, then the default', as
   assert.equal(bySetting.flags[bySetting.flags.indexOf('--model') + 1], 'haiku');
   const byQuestion = JSON.parse((await askWith('echo', { question: 'Rent?', model: 'opus' })).answer);
   assert.equal(byQuestion.flags[byQuestion.flags.indexOf('--model') + 1], 'opus');
+});
+
+test('a figure beside a source goes to Claude as an image, labelled; Antigravity reads its caption only', async (t) => {
+  const { makePdf, barChartPage } = await import('./fixtures.js');
+  const { engine, file, askWith } = setup(t);
+  const r0 = await engine.ingest(file('costs.pdf', makePdf([[{ text: 'Costs', size: 20, y: 760 }, ...barChartPage({ top: 700 })]])));
+  const [fig] = engine.store.docFigures(r0.doc.id);
+
+  const r = await askWith('echo', { question: 'Which region cost the most in 2024?' });
+  const seen = JSON.parse(r.answer);
+  assert.equal(seen.images, 1);
+  assert.match(seen.labels[0], /^The figure beside source \[1\] - Figure 1 - Costs by region in 2024\.:$/);
+  assert.match(seen.prompt, /\(Beside this passage: figure "Figure 1 - Costs by region in 2024\." - its image is given\.\)/);
+  assert.match(RULES, /figures/);
+  assert.equal(r.images, 1);
+  // The source keeps its figure, so a reopened conversation can show it.
+  assert.deepEqual(engine.store.sources(r.conversationId)[0].figures.map((f) => f.figureId), [fig.id]);
+
+  const a = await askWith('echo', { question: 'Which region cost the most in 2024?', agent: 'agy' });
+  const agySeen = JSON.parse(a.answer);
+  assert.match(agySeen.prompt, /\(Beside this passage: figure "Figure 1 - Costs by region in 2024\."\.\)/, 'no image is claimed');
+  assert.equal(a.images, 0);
 });

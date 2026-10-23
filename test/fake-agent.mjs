@@ -38,7 +38,11 @@ process.stdin.on('end', () => { if (!hanging) process.exit(0); });
 
 function turn(msg) {
   turnNo++;
-  const prompt = protocol === 'claude' ? msg.message.content[0].text : msg.message.content;
+  // Claude's message is blocks: figures' labels and images first, the prompt last.
+  const blocks = protocol === 'claude' ? msg.message.content : [];
+  const texts = blocks.filter((b) => b.type === 'text').map((b) => b.text);
+  const prompt = protocol === 'claude' ? texts[texts.length - 1] : msg.message.content;
+  const images = blocks.filter((b) => b.type === 'image' && b.source && b.source.media_type === 'image/png' && b.source.data).length;
   const keys = ['ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY'].filter((k) => k in process.env);
   const flag = (name) => { const i = flags.indexOf(name); return i >= 0 ? flags[i + 1] : null; };
 
@@ -50,7 +54,7 @@ function turn(msg) {
   if (behaviour === 'hang') { hanging = setInterval(() => {}, 1000); return; }
 
   let answer = 'The vault code is 7741 [1].';
-  if (behaviour === 'echo') answer = JSON.stringify({ flags, cwd: process.cwd(), keys, prompt, pid: process.pid, turn: turnNo });
+  if (behaviour === 'echo') answer = JSON.stringify({ flags, cwd: process.cwd(), keys, prompt, images, labels: texts.slice(0, -1), pid: process.pid, turn: turnNo });
   if (behaviour === 'cite-unknown') answer = 'Rent is due monthly [1], and late fees apply [9].';
   if (behaviour === 'slow') { setTimeout(() => answerWith(answer), 800); return; }
   answerWith(answer);
