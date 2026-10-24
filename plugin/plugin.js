@@ -501,7 +501,13 @@ function thumbs(figures) {
     const img = el('img');
     img.alt = f.caption || 'Figure';
     b.append(img, el('span', 'n', `[${f.n}]`));
-    imageUrl(f).then((url) => { img.src = url; }).catch((e) => { b.disabled = true; b.title = notShown(e); });
+    // Not opened: say why in the thumbnail itself, not only in a tooltip - the
+    // image's name alone reads like a broken picture.
+    imageUrl(f).then((url) => { img.src = url; }).catch((e) => {
+      b.disabled = true;
+      b.title = notShown(e);
+      b.replaceChildren(el('span', 'thumb-msg', e && e.status === 403 ? 'Not shown - add its folder in Settings' : 'Could not be loaded'), el('span', 'n', `[${f.n}]`));
+    });
     // Its own handler: the thread's would open the passage, not the figure.
     b.addEventListener('click', (e) => { e.stopPropagation(); openFigure(f, f.caption, f.n); });
     row.appendChild(b);

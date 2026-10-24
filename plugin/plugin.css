@@ -265,6 +265,8 @@ progress { width: 120px; height: 6px; vertical-align: middle; accent-color: var(
 .thumb:hover { border-color: var(--accent); }
 .thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .thumb img:not([src]) { background: var(--soft); }
+.thumb .thumb-msg { display: flex; align-items: center; justify-content: center; height: 100%; padding: 18px 10px 8px; font-size: 12px; text-align: center; color: var(--muted); background: var(--soft); }
+.thumb:disabled { cursor: default; }
 .thumb .n { position: absolute; left: 4px; top: 4px; font-size: 11px; line-height: 16px; padding: 0 5px; border-radius: 4px; background: var(--raise); color: var(--fg); border: 1px solid var(--line); }
 .fig img { cursor: zoom-in; }
 .lightbox { position: fixed; inset: 0; z-index: 40; background: rgb(0 0 0 / .75); display: flex; align-items: center; justify-content: center; padding: 28px; }
