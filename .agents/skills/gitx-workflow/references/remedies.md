@@ -4,10 +4,10 @@ None of these rewrites history. A commit, once made, is left as it is.
 
 ## A commit named thoughts, but they are still waiting
 
-The broker promotes only in the repository it is watching. Settle them yourself - the same code the broker runs:
+The broker promotes only in the repository it is watching. Settle them yourself - the same code the broker runs. The import takes a `file:///` URL, spaces as `%20`: on Windows a bare `E:/...` path is read as a URL with scheme `e:` and refused (`ERR_UNSUPPORTED_ESM_URL_SCHEME`).
 
 ```bash
-node --input-type=module -e "import { promote } from '<GitX>/mcp/tools/promote.js'; console.log(JSON.stringify(promote('<repo>', '<full commit hash>', ['t-...', 't-...'])))"
+node --input-type=module -e "import { promote } from 'file:///<GitX>/mcp/tools/promote.js'; console.log(JSON.stringify(promote('<repo>', '<full commit hash>', ['t-...', 't-...'])))"
 ```
 
 Running it twice changes nothing: a promoted thought is no longer waiting.
