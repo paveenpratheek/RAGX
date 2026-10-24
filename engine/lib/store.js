@@ -34,8 +34,9 @@ export class Store {
                      where d.status = 'ready' and coalesce(f.read, 0) = 0 order by d.id`),
       docs: p(`select d.*, (select count(*) from figures f where f.doc_id = d.id) figures,
                  (select count(*) from figures f where f.doc_id = d.id and f.read = 1) figures_read from documents d order by d.id`),
-      addDoc: p(`insert into documents (sha256, name, ext, source_path, bytes, status, added_at, updated_at)
-                 values (?, ?, ?, ?, ?, 'queued', ?, ?)`),
+      addDoc: p(`insert into documents (sha256, name, ext, source_path, bytes, status, added_at, updated_at, origin)
+                 values (?, ?, ?, ?, ?, 'queued', ?, ?, ?)`),
+      setOrigin: p('update documents set origin = ? where id = ?'),
       setStatus: p('update documents set status = ?, error = ?, updated_at = ? where id = ?'),
       setReady: p(`update documents set status = 'ready', error = null, embedded_with = ?, chunks = ?, updated_at = ?
                    where id = ?`),
@@ -115,10 +116,12 @@ export class Store {
   doc(id) { return this.q.doc.get(id) || null; }
   docs() { return this.q.docs.all(); }
 
-  addDoc({ sha256, name, ext, sourcePath = null, bytes }) {
+  addDoc({ sha256, name, ext, sourcePath = null, bytes, origin = null }) {
     const t = now();
-    return Number(this.q.addDoc.run(sha256, name, ext, sourcePath, bytes, t, t).lastInsertRowid);
+    return Number(this.q.addDoc.run(sha256, name, ext, sourcePath, bytes, t, t, origin).lastInsertRowid);
   }
+
+  setOrigin(id, origin) { this.q.setOrigin.run(origin, id); }
 
   setStatus(id, status, error = null) { this.q.setStatus.run(status, error, now(), id); }
   setPages(id, pages) { this.q.setPages.run(pages ?? null, now(), id); }

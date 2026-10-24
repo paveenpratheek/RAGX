@@ -160,6 +160,14 @@ table.docs { width: 100%; border-collapse: collapse; background: var(--raise); b
 .docs tr:last-child td { border-bottom: none; }
 .docs .num { text-align: right; width: 70px; }
 .docs .name { overflow-wrap: anywhere; }
+.origin { display: inline-block; margin-left: 8px; padding: 0 6px; border-radius: 9px; font-size: 11px; line-height: 17px; vertical-align: 1px;
+  background: var(--acc-soft); color: var(--accent); }
+.lib-tools { margin: 6px 0 10px; }
+#notex-hint { cursor: pointer; }
+#notex-hint:not(:empty) { color: var(--accent); text-decoration: underline; }
+.notex-box { margin-bottom: 14px; display: flex; flex-direction: column; gap: 8px; }
+.notex-box .state.new { color: var(--yellow); }
+.notex-box .state.changed { color: var(--accent); }
 .docs .err { color: var(--red); font-size: 12px; }
 .docs .acts { white-space: nowrap; text-align: right; width: 1%; }
 .docs .acts button { padding: 3px 8px; font-size: 12.5px; }

@@ -23,6 +23,7 @@ const S = {
   tab: 'ask', agent: 'claude', model: 'sonnet',
   conv: null, convAgent: null, sources: new Map(), asking: null,
   docs: new Map(), progress: new Map(), events: null, startedAt: 0,
+  libFilter: 'all', notex: null,
 };
 
 /* ------------------------------------------------------------ the host */
@@ -199,7 +200,12 @@ function onEvent(e) {
       S.progress.set(e.docId, e);
       // A document being read for the first time gets its row now, not when
       // it is done (t-770d2af24b).
-      if (!S.docs.has(e.docId)) { S.docs.set(e.docId, { id: e.docId, name: e.name, status: e.phase, chunks: 0, pages: null }); renderDocs(); }
+      if (!S.docs.has(e.docId)) {
+        // A canvas being added from NoteX shows under From File Fabric while it is read.
+        const fromNotex = S.notex && S.notex.files && S.notex.files.some((f) => f.name === e.name && f.status !== 'added');
+        S.docs.set(e.docId, { id: e.docId, name: e.name, status: e.phase, chunks: 0, pages: null, origin: fromNotex ? 'notex' : null });
+        renderDocs();
+      }
       else renderDoc(e.docId);
       break;
     case 'doc':
@@ -210,6 +216,7 @@ function onEvent(e) {
         : `${e.doc.name} is ready - ${e.doc.chunks} passages${e.doc.figures ? `, ${e.doc.figures} figure${e.doc.figures === 1 ? '' : 's'}` : ''}.`);
       if (e.status === 'reembedded') refresh(); // the stale count has changed
       setStatus('up', `Engine running · ${S.docs.size} documents`);
+      loadNotexSoon(); // it may be a canvas from NoteX, now marked
       break;
     case 'ingest-error':
       toast(`${e.name}: ${e.error}`, true);
@@ -218,6 +225,7 @@ function onEvent(e) {
     case 'removed':
       S.docs.delete(e.docId);
       renderDocs();
+      loadNotexSoon();
       break;
     case 'pool':
       renderPool(e.pool);
@@ -245,6 +253,7 @@ async function loadDocs() {
     S.docs = new Map(docs.map((d) => [d.id, d]));
     renderDocs();
   } catch (e) { if (!(e instanceof EngineDown)) toast(e.message, true); }
+  loadNotex();
 }
 
 function statusCell(d) {
@@ -268,6 +277,8 @@ function docRow(d) {
   tr.dataset.id = String(d.id);
   const name = el('td', 'name', d.name);
   if (d.source_path) name.title = d.source_path;
+  // Taken from NoteX: a File Fabric canvas, not a file the user added (t-c30c32cbe2).
+  if (d.origin === 'notex') { const b = el('span', 'origin', 'NoteX'); b.title = 'A File Fabric canvas, written by NoteX'; name.appendChild(b); }
   // Figures, and how many Claude has read: "14/16 read" (t-79cb1dcd37).
   const unread = (d.figures || 0) - (d.figures_read || 0);
   const figs = el('td', 'num', d.figures ? (unread ? `${d.figures_read || 0}/${d.figures} read` : String(d.figures)) : '');
@@ -295,11 +306,71 @@ function renderReading() {
   $('unread-msg').textContent = `${unread} figure${unread === 1 ? ' is' : 's are'} not read by Claude yet, so the words and numbers in ${unread === 1 ? 'it' : 'them'} cannot be searched.`;
 }
 
+/* The filter: all documents, the ones the user added, or File Fabric's
+ * canvases - which also lists what NoteX has written and is not in the
+ * library yet (t-c30c32cbe2). */
+const shownBy = (d) => S.libFilter === 'all' || (S.libFilter === 'notex' ? d.origin === 'notex' : d.origin !== 'notex');
+
 function renderDocs() {
   const body = $('doc-list');
-  body.replaceChildren(...[...S.docs.values()].sort((a, b) => b.id - a.id).map(docRow));
-  $('docs-empty').hidden = S.docs.size > 0;
+  const docs = [...S.docs.values()].filter(shownBy);
+  body.replaceChildren(...docs.sort((a, b) => b.id - a.id).map(docRow));
+  $('docs-empty').hidden = docs.length > 0;
+  $('docs-empty').textContent = !S.docs.size ? 'No documents yet.' : S.libFilter === 'notex' ? 'No File Fabric canvas is in the library yet.' : 'No document added by you yet.';
+  document.querySelectorAll('#lib-filter button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.filter === S.libFilter)));
   renderReading();
+  renderNotex();
+}
+
+async function loadNotex() {
+  try { S.notex = await engine.json('GET', '/api/notex'); } catch (e) { S.notex = null; if (!(e instanceof EngineDown)) toast(e.message, true); }
+  // Listing marks a library document that is a NoteX canvas by its bytes; show it at once.
+  let marked = false;
+  for (const f of (S.notex && S.notex.files) || []) {
+    const d = f.status === 'added' && S.docs.get(f.docId);
+    if (d && d.origin !== 'notex') { d.origin = 'notex'; marked = true; }
+  }
+  if (marked) renderDocs(); else renderNotex();
+}
+// Several documents finishing together ask once.
+function loadNotexSoon() { clearTimeout(loadNotexSoon.t); loadNotexSoon.t = setTimeout(loadNotex, 400); }
+
+const NOTEX_STATE = { new: 'Not in RAGX yet', changed: 'Changed since it was added', added: 'In the library' };
+
+function renderNotex() {
+  const n = S.notex;
+  const waiting = n && n.exists ? n.files.filter((f) => f.status !== 'added') : [];
+  $('notex-hint').textContent = S.libFilter !== 'notex' && waiting.length
+    ? `${waiting.length} File Fabric canvas${waiting.length === 1 ? ' is' : 'es are'} ready to add or update - see From File Fabric.` : '';
+  $('notex-box').hidden = S.libFilter !== 'notex';
+  if (S.libFilter !== 'notex') return;
+  $('notex-folder').textContent = n ? n.folder : '';
+  $('notex-add-all').disabled = !waiting.length;
+  const files = n && n.exists ? n.files : [];
+  $('notex-list').replaceChildren(...files.map((f) => {
+    const tr = el('tr');
+    tr.dataset.name = f.name;
+    const name = el('td', 'name', f.fabric);
+    name.title = f.name;
+    const stat = el('td');
+    stat.appendChild(el('span', `state ${f.status}`, NOTEX_STATE[f.status]));
+    if (f.docStatus && f.docStatus !== 'ready') stat.appendChild(el('div', 'note', f.docStatus));
+    const acts = el('td', 'acts');
+    if (f.status !== 'added') { const b = el('button', f.status === 'new' ? 'primary' : null, f.status === 'new' ? 'Add' : 'Update'); b.dataset.act = 'notex-add'; acts.appendChild(b); }
+    tr.append(name, el('td', null, new Date(f.modified).toLocaleString()), stat, acts);
+    return tr;
+  }));
+  $('notex-empty').hidden = files.length > 0;
+  $('notex-empty').textContent = !n ? '' : !n.exists
+    ? `No NoteX documents folder at ${n.folder}. Open a fabric on the NoteX page to write one, or set the folder in Settings.`
+    : 'NoteX has not written any canvas yet - open a fabric on the NoteX page.';
+}
+
+async function addNotex(names) {
+  try {
+    const r = await engine.json('POST', '/api/notex/add', { body: names ? { names } : {} });
+    toast(r.queued.length ? `Adding ${r.queued.length} canvas${r.queued.length === 1 ? '' : 'es'} from NoteX.` : 'Nothing new to add.');
+  } catch (e) { toast(e.message, true); }
 }
 
 function renderDoc(id) {
@@ -642,6 +713,8 @@ function renderSettings() {
     f.readFigures.checked = s.readFigures !== false;
     f.readModel.value = s.readModel || '';
     f.imageFolders.value = (s.imageFolders || []).join('\n');
+    f.notexDocs.value = s.notexDocsSet || '';
+    f.notexDocs.placeholder = s.notexDocs || f.notexDocs.placeholder;
   }
   renderReading();
   const facts = $('engine-facts');
@@ -668,6 +741,7 @@ async function saveSettings(ev) {
     claudePath: f.claudePath.value.trim(), agyPath: f.agyPath.value.trim(),
     readFigures: f.readFigures.checked, readModel: f.readModel.value.trim(),
     imageFolders: f.imageFolders.value.split('\n').map((x) => x.trim()).filter(Boolean),
+    notexDocs: f.notexDocs.value.trim(),
   };
   const emb = { embedModel: f.embedModel.value.trim(), queryPrefix: f.queryPrefix.value, docPrefix: f.docPrefix.value };
   if (emb.embedModel !== s.model || emb.queryPrefix !== s.queryPrefix || emb.docPrefix !== s.docPrefix) Object.assign(body, emb);
@@ -1126,6 +1200,20 @@ function wire() {
     if (!p) return;
     try { await engine.json('POST', '/api/docs/path', { body: { path: p } }); $('path').value = ''; toast('Queued.'); } catch (err) { toast(err.message, true); }
   });
+  $('lib-filter').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-filter]');
+    if (!b) return;
+    S.libFilter = b.dataset.filter;
+    remember('lib-filter', S.libFilter);
+    renderDocs();
+    if (S.libFilter === 'notex') loadNotex();
+  });
+  $('notex-hint').addEventListener('click', () => { S.libFilter = 'notex'; remember('lib-filter', 'notex'); renderDocs(); });
+  $('notex-add-all').addEventListener('click', () => addNotex(null));
+  $('notex-list').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-act="notex-add"]');
+    if (b) { b.disabled = true; addNotex([b.closest('tr').dataset.name]); }
+  });
   $('read-all').addEventListener('click', async () => {
     try { const r = await engine.json('POST', '/api/read'); toast(`Reading figures in ${r.queued.length} document${r.queued.length === 1 ? '' : 's'} - up to 50 each.`); } catch (err) { toast(err.message, true); }
   });
@@ -1219,6 +1307,7 @@ async function boot() {
   wire();
   if (TM) await TM.ready;
   S.tab = await recall('tab', 'ask');
+  S.libFilter = await recall('lib-filter', 'all');
   S.agent = await recall('agent', 'claude');
   S.model = await recall('model', 'sonnet');
   for (const key of ['range', 'source', 'kind']) { T[key] = await recall('tr-' + key, T[key]); $('tr-' + key).value = T[key]; }

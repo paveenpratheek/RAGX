@@ -136,7 +136,7 @@ export class Engine {
    * bad document - the result says what happened to it. */
   /* name and sourcePath default to the file's own; an upload passes the name
    * it was sent under and no source path, since its file is a temporary. */
-  async ingest(filePath, { onProgress = () => {}, name = null, sourcePath } = {}) {
+  async ingest(filePath, { onProgress = () => {}, name = null, sourcePath, origin = null } = {}) {
     const abs = path.resolve(filePath);
     const shown = name || path.basename(abs);
     const ext = path.extname(shown).toLowerCase();
@@ -149,14 +149,16 @@ export class Engine {
     }
     const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
     const known = this.store.docBySha(sha256);
-    if (known && known.status === STATUS.ready) return { status: 'exists', doc: known };
+    // The same bytes are the same document, whichever way they came in (t-9406918dd3).
+    if (known && origin && known.origin !== origin) this.store.setOrigin(known.id, origin);
+    if (known && known.status === STATUS.ready) return { status: 'exists', doc: this.store.doc(known.id) };
 
     let id;
     if (known) id = known.id;
     else {
       const copy = path.join(this.dir, 'files', sha256 + ext);
       if (!fs.existsSync(copy)) fs.writeFileSync(copy, buf);
-      id = this.store.addDoc({ sha256, name: shown, ext, sourcePath: sourcePath === undefined ? abs : sourcePath, bytes: buf.length });
+      id = this.store.addDoc({ sha256, name: shown, ext, sourcePath: sourcePath === undefined ? abs : sourcePath, bytes: buf.length, origin });
     }
     return this.process(id, { onProgress, label: known ? 'resumed' : 'added' });
   }

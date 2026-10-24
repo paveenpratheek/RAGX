@@ -121,6 +121,26 @@
       <button type="button" id="read-all">Read figures now</button>
     </div>
     <div class="note" id="queue"></div>
+    <div class="row lib-tools">
+      <div class="seg" id="lib-filter" role="radiogroup" aria-label="Show">
+        <button role="radio" data-filter="all">All</button>
+        <button role="radio" data-filter="user">Added by you</button>
+        <button role="radio" data-filter="notex">From File Fabric</button>
+      </div>
+      <span class="note grow" id="notex-hint"></span>
+    </div>
+    <section id="notex-box" class="notex-box" hidden>
+      <div class="row">
+        <strong>File Fabric canvases from NoteX</strong>
+        <span class="note grow" id="notex-folder"></span>
+        <button type="button" id="notex-add-all">Add all new</button>
+      </div>
+      <table class="docs">
+        <thead><tr><th>Canvas</th><th>Saved by NoteX</th><th>In RAGX</th><th></th></tr></thead>
+        <tbody id="notex-list"></tbody>
+      </table>
+      <p class="note" id="notex-empty" hidden></p>
+    </section>
     <table class="docs">
       <thead><tr><th>Document</th><th>Status</th><th class="num">Chunks</th><th class="num">Figures</th><th class="num">Pages</th><th></th></tr></thead>
       <tbody id="doc-list"></tbody>
@@ -144,6 +164,7 @@
       <label class="check"><input type="checkbox" name="readFigures"> Read figures and scanned pages with Claude</label>
       <label>Reader model <input name="readModel" placeholder="haiku" spellcheck="false"></label>
       <p class="note">Each figure and scanned page of a new document is sent to Anthropic once, through your Claude subscription, and Claude writes out its text and what it shows, so the words and numbers in images can be searched. Readings are kept, so an image is never read twice. Documents already in the library are read only when you press Read figures now, at most 50 images at a time.</p>
+      <label>NoteX documents folder <input name="notexDocs" placeholder="beside RAGX's data folder: plugins\notex\docs" spellcheck="false"></label>
       <label>Folders RAGX may show images from <textarea name="imageFolders" rows="3" placeholder="one folder per line, e.g. E:\FILES\my workspace" spellcheck="false"></textarea></label>
       <p class="note">A document can link images on this computer - NoteX links each image of a File Fabric canvas under its place. Under an answer, RAGX shows the images of the places it cited, opening each where it is; only images inside these folders are ever opened.</p>
       <div class="row end">

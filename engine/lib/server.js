@@ -37,6 +37,7 @@ import { takeLock, agentRecord, endOrphans, writeRuntime, writeLocal } from './l
 import { OllamaControl } from './ollama.js';
 import { Tracker, modelReader } from './tracker.js';
 import { IMAGE_TYPES } from './extract/index.js';
+import { notexFolder, notexFile, notexStatus } from './notex.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const VERSION = JSON.parse(fs.readFileSync(path.join(HERE, '..', '..', 'package.json'), 'utf8')).version;
@@ -244,9 +245,13 @@ export async function startServer({
     });
   };
 
+  const notexDir = () => notexFolder(dir, engine.store.getMeta('notex_docs', ''));
+
   const settings = () => ({
     ...engine.settings(),
     imageFolders: imageFolders(),
+    notexDocs: notexDir(),
+    notexDocsSet: engine.store.getMeta('notex_docs', '') || null,
     agent: engine.store.getMeta('agent', 'claude'),
     claudeModel: engine.store.getMeta('claude_model', '') || AGENTS.claude.DEFAULT_MODEL,
     agyModel: engine.store.getMeta('agy_model', '') || null,
@@ -320,6 +325,34 @@ export async function startServer({
       const bytes = await saveUpload(req, tmp);
       const position = enqueue(name, () => engine.ingest(tmp, { name, sourcePath: null, onProgress }), () => fs.rmSync(tmp, { force: true }), { ...whoIs(req), kind: 'ingest' });
       return json(202, { queued: name, bytes, position });
+    }
+
+    /* NoteX's documents: each File Fabric canvas NoteX wrote, and where it
+     * stands in the library (t-c30c32cbe2). Adding one marks it as NoteX's;
+     * a changed one replaces its old version once ready (t-086ad99f31). */
+    if (m('GET', /^\/api\/notex$/)) return json(200, notexStatus(engine.store, notexDir()));
+    if (m('POST', /^\/api\/notex\/add$/)) {
+      const { names } = await readJson(req);
+      const st = notexStatus(engine.store, notexDir());
+      const want = Array.isArray(names) ? names : st.files.filter((f) => f.status !== 'added').map((f) => f.name);
+      const queued = [];
+      for (const name of want) {
+        const entry = st.files.find((f) => f.name === name);
+        const file = notexFile(st.folder, String(name));
+        if (!entry || !file) throw new HttpError(404, 'not-found', `No ${name} in ${st.folder}.`);
+        if (entry.status === 'added') continue;
+        const old = entry.status === 'changed' ? entry.docId : null;
+        enqueue(name, async () => {
+          const r = await engine.ingest(file, { onProgress, origin: 'notex' });
+          if (old && r.status !== 'error' && r.doc && r.doc.id !== old && engine.store.doc(old)) {
+            engine.remove(old);
+            emit({ type: 'removed', docId: old, name, replacedBy: r.doc.id });
+          }
+          return r;
+        }, null, { ...whoIs(req), kind: 'ingest' });
+        queued.push(name);
+      }
+      return json(202, { queued });
     }
 
     if (m('POST', /^\/api\/docs\/path$/)) {
@@ -496,6 +529,11 @@ export async function startServer({
       if (b.agent !== undefined && !AGENTS[b.agent]) throw new HttpError(400, 'bad-agent', `agent must be ${Object.keys(AGENTS).join(' or ')}.`);
       const metaKeys = { agent: 'agent', claudeModel: 'claude_model', agyModel: 'agy_model', claudePath: 'claude_path', agyPath: 'agy_path', readModel: 'read_model' };
       if (b.readFigures !== undefined) engine.store.setMeta('read_figures', b.readFigures ? 'on' : 'off');
+      if (b.notexDocs !== undefined) {
+        const folder = String(b.notexDocs || '').trim().replace(/^"(.*)"$/, '$1');
+        if (folder && !path.isAbsolute(folder)) throw new HttpError(400, 'bad-folder', `"${folder}" is not a full path.`);
+        engine.store.setMeta('notex_docs', folder ? path.resolve(folder) : '');
+      }
       if (b.imageFolders !== undefined) {
         const list = (Array.isArray(b.imageFolders) ? b.imageFolders : []).map((d) => String(d).trim().replace(/^"(.*)"$/, '$1')).filter(Boolean);
         const bad = list.find((d) => !path.isAbsolute(d));
