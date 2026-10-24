@@ -83,6 +83,21 @@ create table if not exists reads (
   primary key (image_sha, model)
 );
 
+/* An image a document links on this machine (a NoteX image, by its path),
+ * under the heading path it sits in. Not a figure: nothing of it is read,
+ * embedded or copied - only shown on the page, from where it is, when a
+ * passage under that heading is cited (t-d112dfa471). */
+create table if not exists linked_images (
+  id      integer primary key,
+  doc_id  integer not null references documents(id) on delete cascade,
+  ord     integer not null,
+  heading text not null default '',
+  name    text not null,
+  path    text not null,
+  unique (doc_id, ord)
+);
+create index if not exists linked_images_at on linked_images (doc_id, heading);
+
 create table if not exists figure_vectors (
   figure_id integer primary key references figures(id) on delete cascade,
   v         blob not null
@@ -185,11 +200,12 @@ create table if not exists samples_min (
  * figure's read is 1 once its reading is in the document's chunks; a call's
  * read_ms, reads and read_cached are the time spent reading images, the
  * readings made and those taken from the kept ones. A figure source's
- * reading is what Claude read in it, kept with the conversation. */
+ * reading is what Claude read in it, kept with the conversation. A source's
+ * images, as JSON, are the linked images under its heading. */
 const COLUMNS = [['calls', 'image_ms', 'integer'], ['sources', 'figure_id', 'integer'], ['sources', 'figures', 'text'],
   ['chunks', 'figure_id', 'integer'], ['chunks', 'origin', 'text'],
   ['figures', 'read', 'integer'], ['calls', 'read_ms', 'integer'], ['calls', 'reads', 'integer'], ['calls', 'read_cached', 'integer'],
-  ['sources', 'reading', 'text']];
+  ['sources', 'reading', 'text'], ['sources', 'images', 'text']];
 
 /* `lead` is how many characters at the start of a chunk repeat the end of the
  * one before it - the overlap. Search joins neighbouring chunks by dropping

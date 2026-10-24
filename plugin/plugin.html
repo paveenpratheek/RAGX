@@ -144,6 +144,8 @@
       <label class="check"><input type="checkbox" name="readFigures"> Read figures and scanned pages with Claude</label>
       <label>Reader model <input name="readModel" placeholder="haiku" spellcheck="false"></label>
       <p class="note">Each figure and scanned page of a new document is sent to Anthropic once, through your Claude subscription, and Claude writes out its text and what it shows, so the words and numbers in images can be searched. Readings are kept, so an image is never read twice. Documents already in the library are read only when you press Read figures now, at most 50 images at a time.</p>
+      <label>Folders RAGX may show images from <textarea name="imageFolders" rows="3" placeholder="one folder per line, e.g. E:\FILES\my workspace" spellcheck="false"></textarea></label>
+      <p class="note">A document can link images on this computer - NoteX links each image of a File Fabric canvas under its place. Under an answer, RAGX shows the images of the places it cited, opening each where it is; only images inside these folders are ever opened.</p>
       <div class="row end">
         <span class="note" id="settings-msg"></span>
         <button type="button" id="reembed" hidden>Re-embed now</button>

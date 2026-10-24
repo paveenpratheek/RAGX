@@ -156,6 +156,9 @@ export function hybridSearch({ store, index, figureIndex = null, question, query
     if (pictures.length) inside = inside.filter((f) => reached(f.id)).sort((a, b) => rank.get(a.id).rank - rank.get(b.id).rank);
     p.figures = inside.slice(0, perPassage).map((f) => figureRef(store, f));
     for (const f of p.figures) attached.add(f.figureId);
+    // The images its document links under the same heading - NoteX's, at this place (t-d112dfa471).
+    const images = store.linkedAt(p.docId, p.heading).map((l) => ({ linkedId: l.id, name: l.name, path: l.path }));
+    if (images.length) p.images = images;
   }
 
   /* A passage Claude read from an image comes back as that image's figure,

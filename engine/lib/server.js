@@ -36,6 +36,7 @@ import { AgentPool } from './agents/pool.js';
 import { takeLock, agentRecord, endOrphans, writeRuntime, writeLocal } from './lifecycle.js';
 import { OllamaControl } from './ollama.js';
 import { Tracker, modelReader } from './tracker.js';
+import { IMAGE_TYPES } from './extract/index.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const VERSION = JSON.parse(fs.readFileSync(path.join(HERE, '..', '..', 'package.json'), 'utf8')).version;
@@ -44,6 +45,8 @@ export const DEFAULT_ORIGINS = ['http://127.0.0.1:7070', 'http://localhost:7070'
 export const DEFAULT_RUNTIME = path.join(HERE, '..', '..', 'plugin', 'runtime.json');
 const MAX_JSON = 1024 * 1024;
 const MAX_UPLOAD = 200 * 1024 * 1024;
+const MAX_IMAGE = 30 * 1024 * 1024;
+const IMAGE_MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' };
 
 class HttpError extends Error {
   constructor(status, code, message) { super(message); this.status = status; this.code = code; }
@@ -54,6 +57,7 @@ function statusOf(e) {
   if (e instanceof HttpError) return e.status;
   const code = e && e.code;
   if (code === 'not-found') return 404;
+  if (code === 'bad-image') return 400;
   if (code === 'busy' || code === 'wrong-agent' || code === 'needs-reembed' || code === 'pool-full') return 409;
   if (e instanceof EmbedError || e instanceof AgentError) return 503;
   if (e instanceof AskError) return 400;
@@ -225,8 +229,24 @@ export async function startServer({
     } catch (e) { return [name, { found: false, error: e.message }]; }
   }));
 
+  /* The folders the page may show linked images from, as the user listed
+   * them in Settings. A path written in a document is only the document's
+   * word, so nothing outside these is ever opened (t-1cfacc1b16). */
+  const imageFolders = () => {
+    try { const v = JSON.parse(engine.store.getMeta('image_folders', '[]')); return Array.isArray(v) ? v : []; } catch (_) { return []; }
+  };
+  const mayShow = (file) => {
+    if (!IMAGE_TYPES.includes(path.extname(file).toLowerCase())) return false;
+    const abs = path.resolve(file);
+    return imageFolders().some((dir) => {
+      const rel = path.relative(path.resolve(dir), abs);
+      return rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+    });
+  };
+
   const settings = () => ({
     ...engine.settings(),
+    imageFolders: imageFolders(),
     agent: engine.store.getMeta('agent', 'claude'),
     claudeModel: engine.store.getMeta('claude_model', '') || AGENTS.claude.DEFAULT_MODEL,
     agyModel: engine.store.getMeta('agy_model', '') || null,
@@ -352,6 +372,38 @@ export async function startServer({
       res.end(fs.readFileSync(file));
       return;
     }
+    /* A linked image, opened where it is - only inside a folder listed in
+     * Settings, and only an image file (t-1cfacc1b16). */
+    if ((p = m('GET', /^\/api\/linked\/(\d+)\/image$/))) {
+      const l = engine.store.linkedImage(Number(p[0]));
+      if (!l) throw new HttpError(404, 'not-found', 'No such image.');
+      if (!mayShow(l.path)) throw new HttpError(403, 'not-allowed', `${l.path} is not in a folder RAGX may show images from - add its folder in Settings.`);
+      let buf;
+      try { buf = fs.readFileSync(l.path); } catch (e) { throw new HttpError(404, 'not-found', `${l.path} is not there any more (${e.code || e.message}).`); }
+      res.writeHead(200, { 'content-type': IMAGE_MIME[path.extname(l.path).toLowerCase()], 'cache-control': 'private, max-age=600' });
+      res.end(buf);
+      return;
+    }
+
+    /* One image read on its own - for NoteX, which writes the reading into
+     * its document beside the image's path; nothing but the reading is kept
+     * (t-2a6293f2b7). Readings share the engine's four slots (t-a5d9223798). */
+    if (m('POST', /^\/api\/read-image$/)) {
+      const name = decodeURIComponent(String(req.headers['x-file-name'] || 'image'));
+      const buf = await readBody(req, MAX_IMAGE);
+      const who = whoIs(req);
+      const started = Date.now();
+      const stats = {};
+      let r;
+      try { r = await engine.readOne(buf, { stats }); } catch (e) {
+        tracker.record({ ...who, kind: 'read', question: name, ms: Date.now() - started, error: e.message });
+        throw e;
+      }
+      tracker.record({ ...who, kind: 'read', question: name, ms: Date.now() - started, results: 1,
+        timings: { readMs: stats.readMs || 0, reads: stats.reads || 0, readCached: r.cached ? 1 : 0 }, detail: { model: r.model, cached: Boolean(r.cached), kind: r.kind } });
+      return json(200, { kind: r.kind, text: r.text, description: r.description, parsed: r.parsed, model: r.model, cached: Boolean(r.cached), ms: r.ms ?? null });
+    }
+
     if ((p = m('GET', /^\/api\/docs\/(\d+)\/figures$/))) {
       if (!engine.store.doc(Number(p[0]))) throw new HttpError(404, 'not-found', 'No such document.');
       return json(200, { figures: engine.store.docFigures(Number(p[0])).map(figureView) });
@@ -444,6 +496,12 @@ export async function startServer({
       if (b.agent !== undefined && !AGENTS[b.agent]) throw new HttpError(400, 'bad-agent', `agent must be ${Object.keys(AGENTS).join(' or ')}.`);
       const metaKeys = { agent: 'agent', claudeModel: 'claude_model', agyModel: 'agy_model', claudePath: 'claude_path', agyPath: 'agy_path', readModel: 'read_model' };
       if (b.readFigures !== undefined) engine.store.setMeta('read_figures', b.readFigures ? 'on' : 'off');
+      if (b.imageFolders !== undefined) {
+        const list = (Array.isArray(b.imageFolders) ? b.imageFolders : []).map((d) => String(d).trim().replace(/^"(.*)"$/, '$1')).filter(Boolean);
+        const bad = list.find((d) => !path.isAbsolute(d));
+        if (bad) throw new HttpError(400, 'bad-folder', `"${bad}" is not a full path - give folders like E:\\FILES\\workspace.`);
+        engine.store.setMeta('image_folders', JSON.stringify([...new Set(list.map((d) => path.resolve(d)))]));
+      }
       for (const [k, meta] of Object.entries(metaKeys)) if (b[k] !== undefined) engine.store.setMeta(meta, b[k] ?? '');
       let stale = 0;
       if (b.embedModel !== undefined || b.queryPrefix !== undefined || b.docPrefix !== undefined) {

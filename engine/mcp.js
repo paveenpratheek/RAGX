@@ -169,7 +169,9 @@ async function call(name, a = {}) {
       if (!r.passages.length) return ok(`Nothing in the user's documents matches "${query}".`);
       // What Claude read in a figure goes with it, shortened and labelled (t-c81bd67c8d).
       const read = (text, max) => (text ? `\nRead from the image (machine-read, may contain errors): ${clip(text.replace(/\s+/g, ' '), max)}` : '');
-      const beside = (p) => (p.figures || []).map((f) => `\nFigure beside it: figure ${f.figureId}${f.caption ? ` - ${f.caption}` : ''}${read(f.reading, 300)}`).join('');
+      // A linked image is named with its path only: its reading is already in the text, and the file is the agent's to open (t-1729ca9023).
+      const beside = (p) => (p.figures || []).map((f) => `\nFigure beside it: figure ${f.figureId}${f.caption ? ` - ${f.caption}` : ''}${read(f.reading, 300)}`).join('')
+        + (p.images || []).map((im) => `\nImage at this place: ${im.name} - ${im.path}`).join('');
       const parts = r.passages.map((p, i) => (p.figureId
         ? `[${i + 1}] ${p.docName}${where(p)}${p.heading ? ' - ' + p.heading : ''}  (FIGURE ${p.figureId})\n${p.text}${read(p.reading, 700)}`
         : `[${i + 1}] ${p.docName}${where(p)}${p.heading ? ' - ' + p.heading : ''}  (passage ${p.chunkIds[0]})\n${p.text}${beside(p)}`));

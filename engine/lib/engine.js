@@ -21,7 +21,8 @@ import { chunk, chunkApart, targetFor } from './chunk.js';
 import { Embedder, EmbedError, readSettings, writeSettings, signature, chunkInput, defaultPrefixes } from './embed.js';
 import { VectorIndex } from './vectors.js';
 import { hybridSearch, FIGURE_FLOOR } from './search.js';
-import { readImage, readingBlocks, imageKey, READ_MODEL } from './reader.js';
+import { readImage, readingBlocks, imageKey, READ_MODEL, READ_AT_ONCE, gate } from './reader.js';
+import { toPng } from './extract/figures.js';
 import { agentFolder, AgentError } from './agents/runner.js';
 
 export class EngineError extends Error {
@@ -57,9 +58,11 @@ export class Engine {
 
   /* figureFloor: how close a question must come to a figure - measured for
    * embeddinggemma-2 (t-525cbbd9a7); tests with a stand-in model lower it. */
-  constructor(dir, { makeEmbedder = (s) => new Embedder(s), figureFloor = FIGURE_FLOOR, readerOptions = {}, readCap = READ_CAP } = {}) {
+  constructor(dir, { makeEmbedder = (s) => new Embedder(s), figureFloor = FIGURE_FLOOR, readerOptions = {}, readCap = READ_CAP, readAtOnce = READ_AT_ONCE } = {}) {
     this.figureFloor = figureFloor;
     this.readCap = readCap;
+    this.readAtOnce = readAtOnce;
+    this.readGate = gate(readAtOnce);
     // How Claude is run to read images; tests point it at a stand-in.
     this.readerOptions = readerOptions;
     this.dir = dir;
@@ -233,42 +236,76 @@ export class Engine {
     const { readFigures: on, readModel } = this.readingSettings();
     const calling = mode === 'call' && (on || asked);
     const exe = this.store.getMeta('claude_path', '') || null;
-    const items = [];
+    const readings = new Array(todo.length).fill(null);
     let calls = 0;
     let readError = null;
     let done = 0;
+    let next = 0;
     say('reading', 0, todo.length);
-    for (const f of todo) {
-      if (this.stopRequested) throw new EngineError('stopped', 'Stopped; figures not read yet wait for Read figures now.');
-      const png = fs.readFileSync(path.join(this.dir, f.file));
-      let reading = this.store.reading(imageKey(png), readModel);
-      if (reading) stats.readCached = (stats.readCached || 0) + 1;
-      else if (calling && !readError && calls < this.readCap) {
-        try {
-          reading = await readImage(png, { store: this.store, model: readModel, cwd: agentFolder(this.dir), executable: exe, agentOptions: this.readerOptions, stats });
+    /* Up to READ_AT_ONCE workers take the figures in turn; the gate is the
+     * engine's, so readings for NoteX share the same slots (t-a5d9223798).
+     * A call is counted before it starts, so the cap holds with several in
+     * flight. */
+    const worker = async () => {
+      while (next < todo.length) {
+        const i = next++;
+        if (this.stopRequested) throw new EngineError('stopped', 'Stopped; figures not read yet wait for Read figures now.');
+        const png = fs.readFileSync(path.join(this.dir, todo[i].file));
+        let reading = this.store.reading(imageKey(png), readModel);
+        if (reading) stats.readCached = (stats.readCached || 0) + 1;
+        else if (calling && !readError && calls < this.readCap) {
           calls++;
-        } catch (e) {
-          if (!(e instanceof AgentError)) throw e;
-          readError = e.message;
+          try {
+            reading = await this.readGate.run(() => readImage(png, { store: this.store, model: readModel, cwd: agentFolder(this.dir), executable: exe, agentOptions: this.readerOptions, stats }));
+          } catch (e) {
+            if (!(e instanceof AgentError)) throw e;
+            readError = readError || e.message;
+          }
         }
+        if (reading) { readings[i] = reading; done++; }
+        say('reading', done, todo.length);
       }
-      if (reading) {
-        const scan = f.kind === 'page';
-        const heading = scan ? `Scanned page ${f.page}` : `${f.caption || (f.page ? `Figure on page ${f.page}` : 'Figure')} (read from the image)`;
-        const blocks = readingBlocks(reading, { page: f.page, scan });
-        if (blocks.length) items.push({ heading: f.heading && !scan ? `${f.heading} > ${heading}` : heading, figureId: f.id, blocks });
-        this.store.setFigureRead(f.id);
-        done++;
-      }
-      say('reading', done, todo.length);
+    };
+    const runs = await Promise.allSettled(Array.from({ length: Math.min(this.readAtOnce, todo.length) }, worker));
+    const failed = runs.find((r) => r.status === 'rejected');
+    if (failed) throw failed.reason;
+
+    // In figure order, whichever finished first.
+    const items = [];
+    const readIds = [];
+    for (const [i, f] of todo.entries()) {
+      const reading = readings[i];
+      if (!reading) continue;
+      const scan = f.kind === 'page';
+      const heading = scan ? `Scanned page ${f.page}` : `${f.caption || (f.page ? `Figure on page ${f.page}` : 'Figure')} (read from the image)`;
+      const blocks = readingBlocks(reading, { page: f.page, scan });
+      if (blocks.length) items.push({ heading: f.heading && !scan ? `${f.heading} > ${heading}` : heading, figureId: f.id, blocks });
+      readIds.push(f.id);
     }
     if (items.length) {
       const chunks = chunkApart(items, await this.chunkOptions(doc));
       this.store.appendChunks(doc.id, chunks);
       this.store.setEmbedding(doc.id, this.embedder.signature);
-      await this.embedMissing(doc, say, stats);
     }
+    // Marked read only once its reading is in the document's chunks.
+    for (const id of readIds) this.store.setFigureRead(id);
+    if (items.length) await this.embedMissing(doc, say, stats);
     return { read: done, unread: todo.length - done, readError };
+  }
+
+  /* One image sent on its own - NoteX's, from a File Fabric canvas - read
+   * with the reading settings and kept by its content like any reading. It
+   * is asked for, so it is read even with reading off, and nothing of it is
+   * stored but the reading (t-2a6293f2b7, t-1729ca9023). */
+  async readOne(buf, { stats = {} } = {}) {
+    const img = await toPng(buf);
+    if (!img) throw new EngineError('bad-image', 'The image could not be read - send a PNG, JPEG, WebP or GIF file.');
+    const { readModel } = this.readingSettings();
+    const exe = this.store.getMeta('claude_path', '') || null;
+    const kept = this.store.reading(imageKey(img.png), readModel);
+    if (kept) return { ...kept, model: readModel, cached: true };
+    const r = await this.readGate.run(() => readImage(img.png, { store: this.store, model: readModel, cwd: agentFolder(this.dir), executable: exe, agentOptions: this.readerOptions, stats }));
+    return { ...r, model: readModel };
   }
 
   /* The model's context length, asked of Ollama once per model. */
@@ -280,7 +317,8 @@ export class Engine {
   async build(doc, say, stats = null) {
     this.store.setStatus(doc.id, STATUS.extracting);
     say('extracting');
-    const { blocks, pages, figures, figureError } = await extract(fs.readFileSync(this.fileOf(doc)), doc.ext);
+    const { blocks, pages, figures, figureError, links } = await extract(fs.readFileSync(this.fileOf(doc)), doc.ext);
+    this.store.replaceLinked(doc.id, links);
     this.store.setPages(doc.id, pages);
     const saved = this.saveFigures(doc.id, figures);
     const found = { figures: saved.length, figureError: figureError || null };

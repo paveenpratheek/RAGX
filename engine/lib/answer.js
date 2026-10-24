@@ -134,7 +134,8 @@ export async function ask(engine, { question, agent = null, model = null, conver
     const known = byKey.get(keyOf(p));
     if (known) { shown.push(known); continue; }
     const s = { n: next++, chunkIds: p.chunkIds, docId: p.docId, docName: p.docName, heading: p.heading,
-      pageFrom: p.pageFrom, pageTo: p.pageTo, text: p.text, figureId: p.figureId ?? null, figures: p.figures || [], reading: p.reading || null };
+      pageFrom: p.pageFrom, pageTo: p.pageTo, text: p.text, figureId: p.figureId ?? null, figures: p.figures || [], reading: p.reading || null,
+      images: p.images || [] };
     fresh.push(s);
     shown.push(s);
   }

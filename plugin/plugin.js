@@ -398,18 +398,26 @@ function addMessage(role, text = '') {
 }
 
 /* The figures an answer cites: a figure that is itself a cited source, then
- * the figures beside cited passages, each once (t-cfd255ac87). */
+ * the figures beside cited passages, each once (t-cfd255ac87) - and the
+ * images a cited place links, opened where they are (t-d112dfa471). */
 const MAX_THUMBS = 6;
+const imageKey = (f) => (f.linkedId ? `l${f.linkedId}` : `f${f.figureId}`);
 function citedFigures(cited) {
   const out = [];
   for (const n of cited) {
     const s = S.sources.get(n);
     if (!s) continue;
     const figs = s.figureId ? [{ figureId: s.figureId, caption: s.text }] : (s.figures || []);
-    for (const f of figs) if (!out.some((x) => x.figureId === f.figureId)) out.push({ ...f, n });
+    const linked = (s.images || []).map((im) => ({ linkedId: im.linkedId, caption: im.name, path: im.path }));
+    for (const f of [...figs, ...linked]) if (!out.some((x) => imageKey(x) === imageKey(f))) out.push({ ...f, n });
   }
   return out.slice(0, MAX_THUMBS);
 }
+
+/* A figure is RAGX's own; a linked image is fetched from where it is, and
+ * is refused when its folder is not listed in Settings. */
+const imageUrl = (f) => (f.linkedId ? engine.linkedUrl(f.linkedId) : engine.figureUrl(f.figureId));
+const notShown = (e) => (e && e.status === 403 ? 'Not shown - add its folder in Settings → Folders RAGX may show images from.' : 'The image could not be loaded.');
 
 /* A row of thumbnails under an answer, so a question about a chart is
  * answered with the chart in view; each opens full size. */
@@ -422,26 +430,41 @@ function thumbs(figures) {
     const img = el('img');
     img.alt = f.caption || 'Figure';
     b.append(img, el('span', 'n', `[${f.n}]`));
-    engine.figureUrl(f.figureId).then((url) => { img.src = url; }).catch(() => { b.disabled = true; b.title = 'The figure could not be loaded'; });
+    imageUrl(f).then((url) => { img.src = url; }).catch((e) => { b.disabled = true; b.title = notShown(e); });
     // Its own handler: the thread's would open the passage, not the figure.
-    b.addEventListener('click', (e) => { e.stopPropagation(); openFigure(f.figureId, f.caption, f.n); });
+    b.addEventListener('click', (e) => { e.stopPropagation(); openFigure(f, f.caption, f.n); });
     row.appendChild(b);
   }
   return row;
 }
 
-/* One figure over the page, as large as the window allows. */
+/* One figure or linked image over the page, as large as the window allows.
+ * ref is a figure id, or { figureId } / { linkedId, path }. */
 let lightboxSource = null;
-function openFigure(id, caption, n = null) {
+function openFigure(ref, caption, n = null) {
+  const f = typeof ref === 'object' ? ref : { figureId: ref };
   lightboxSource = n;
   const img = $('lightbox-img');
   img.removeAttribute('src');
   img.alt = caption || 'Figure';
-  $('lightbox-cap').textContent = `${n ? `[${n}] ` : ''}${caption || 'Figure with no caption'}`;
+  $('lightbox-cap').textContent = `${n ? `[${n}] ` : ''}${caption || 'Figure with no caption'}${f.path ? ` - ${f.path}` : ''}`;
   $('lightbox-source').hidden = n == null;
   $('lightbox').hidden = false;
-  engine.figureUrl(id).then((url) => { img.src = url; }).catch(() => { $('lightbox-cap').textContent = 'The figure could not be loaded.'; });
+  imageUrl(f).then((url) => { img.src = url; }).catch((e) => { $('lightbox-cap').textContent = notShown(e); });
   $('lightbox-close').focus();
+}
+
+/* A linked image in the source panel: the picture, its name and where it is. */
+function linkedBox(im, n) {
+  const box = el('figure', 'fig');
+  const img = el('img');
+  img.alt = im.name;
+  img.title = 'Open full size';
+  const f = { linkedId: im.linkedId, path: im.path };
+  img.addEventListener('click', () => openFigure(f, im.name, n));
+  box.append(img, el('figcaption', null, `${im.name} - ${im.path}`));
+  imageUrl(f).then((url) => { img.src = url; }).catch((e) => box.replaceChildren(el('div', 'note', `${im.name}: ${notShown(e)}`)));
+  return box;
 }
 function closeFigure() { $('lightbox').hidden = true; lightboxSource = null; }
 
@@ -576,7 +599,8 @@ function openSource(n) {
   $('source-where').textContent = [s.pageFrom == null ? '' : s.pageFrom === s.pageTo ? `page ${s.pageFrom}` : `pages ${s.pageFrom}-${s.pageTo}`, s.heading].filter(Boolean).join(' · ');
   // A figure shows as its image; a passage shows its text, then the figures beside it.
   if (s.figureId) $('source-body').replaceChildren(figureBox(s.figureId, s.text, s.n, s.reading));
-  else $('source-body').replaceChildren(el('mark', null, s.text), ...(s.figures || []).map((f) => figureBox(f.figureId, f.caption, s.n, f.reading)));
+  else $('source-body').replaceChildren(el('mark', null, s.text), ...(s.figures || []).map((f) => figureBox(f.figureId, f.caption, s.n, f.reading)),
+    ...(s.images || []).map((im) => linkedBox(im, s.n)));
   // A figure found by its reading has chunks, but the text around them is only more of the reading.
   $('source-more').hidden = Boolean(s.figureId) || !s.chunkIds || !s.chunkIds.length;
 }
@@ -617,6 +641,7 @@ function renderSettings() {
     f.docPrefix.value = s.docPrefix || '';
     f.readFigures.checked = s.readFigures !== false;
     f.readModel.value = s.readModel || '';
+    f.imageFolders.value = (s.imageFolders || []).join('\n');
   }
   renderReading();
   const facts = $('engine-facts');
@@ -642,6 +667,7 @@ async function saveSettings(ev) {
     claudeModel: f.claudeModel.value, agyModel: f.agyModel.value.trim(),
     claudePath: f.claudePath.value.trim(), agyPath: f.agyPath.value.trim(),
     readFigures: f.readFigures.checked, readModel: f.readModel.value.trim(),
+    imageFolders: f.imageFolders.value.split('\n').map((x) => x.trim()).filter(Boolean),
   };
   const emb = { embedModel: f.embedModel.value.trim(), queryPrefix: f.queryPrefix.value, docPrefix: f.docPrefix.value };
   if (emb.embedModel !== s.model || emb.queryPrefix !== s.queryPrefix || emb.docPrefix !== s.docPrefix) Object.assign(body, emb);

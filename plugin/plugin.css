@@ -173,6 +173,7 @@ progress { width: 120px; height: 6px; vertical-align: middle; accent-color: var(
 .form { display: flex; flex-direction: column; gap: 10px; }
 .form h3 { margin: 6px 0 0; font-size: 14px; }
 .form label { display: grid; grid-template-columns: 170px 1fr; gap: 10px; align-items: center; }
+.form label textarea { resize: vertical; font-family: var(--mono-font); font-size: 12.5px; }
 
 /* tracker */
 .tracker { overflow: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 14px; position: relative; }

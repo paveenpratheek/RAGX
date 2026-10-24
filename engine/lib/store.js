@@ -79,8 +79,12 @@ export class Store {
       setSession: p('update conversations set session = ?, model = coalesce(?, model), updated_at = ? where id = ?'),
       addMessage: p('insert into messages (conversation_id, role, text, cited, unknown, created_at) values (?, ?, ?, ?, ?, ?)'),
       messages: p('select * from messages where conversation_id = ? order by id'),
-      addSource: p(`insert into sources (conversation_id, n, chunk_ids, doc_id, doc_name, heading, page_from, page_to, text, figure_id, figures, reading)
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+      addSource: p(`insert into sources (conversation_id, n, chunk_ids, doc_id, doc_name, heading, page_from, page_to, text, figure_id, figures, reading, images)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+      deleteLinked: p('delete from linked_images where doc_id = ?'),
+      addLinked: p('insert into linked_images (doc_id, ord, heading, name, path) values (?, ?, ?, ?, ?)'),
+      linkedAt: p('select id, name, path from linked_images where doc_id = ? and heading = ? order by ord'),
+      linked: p('select l.*, d.name doc_name from linked_images l join documents d on d.id = l.doc_id where l.id = ?'),
       sources: p('select * from sources where conversation_id = ? order by n'),
       deleteConversation: p('delete from conversations where id = ?'),
       deleteFigures: p('delete from figures where doc_id = ?'),
@@ -160,6 +164,18 @@ export class Store {
       });
     });
   }
+
+  /* A document's linked images, replacing any it had. */
+  replaceLinked(docId, links) {
+    transaction(this.db, () => {
+      this.q.deleteLinked.run(docId);
+      links.forEach((l, i) => this.q.addLinked.run(docId, i, l.heading || '', l.name, l.path));
+    });
+  }
+
+  /* The images linked under one heading path of a document, in order. */
+  linkedAt(docId, heading) { return this.q.linkedAt.all(docId, heading || ''); }
+  linkedImage(id) { return this.q.linked.get(id) || null; }
 
   docFigures(docId) { return this.q.docFigures.all(docId).map(figureRow); }
   docFigureIds(docId) { return this.q.docFigureIds.all(docId).map((r) => r.id); }
@@ -266,7 +282,7 @@ export class Store {
       for (const s of sources) {
         this.q.addSource.run(conversationId, s.n, JSON.stringify(s.chunkIds), s.docId ?? null, s.docName,
           s.heading || '', s.pageFrom ?? null, s.pageTo ?? null, s.text, s.figureId ?? null, s.figures && s.figures.length ? JSON.stringify(s.figures) : null,
-          s.reading || null);
+          s.reading || null, s.images && s.images.length ? JSON.stringify(s.images) : null);
       }
     });
   }
@@ -276,6 +292,7 @@ export class Store {
       n: s.n, chunkIds: JSON.parse(s.chunk_ids), docId: s.doc_id, docName: s.doc_name,
       heading: s.heading, pageFrom: s.page_from, pageTo: s.page_to, text: s.text,
       figureId: s.figure_id ?? null, figures: s.figures ? JSON.parse(s.figures) : [], reading: s.reading || null,
+      images: s.images ? JSON.parse(s.images) : [],
     }));
   }
 

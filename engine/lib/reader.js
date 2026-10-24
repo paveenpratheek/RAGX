@@ -38,6 +38,31 @@ export const READ_SYSTEM = [
 
 export const imageKey = (png) => crypto.createHash('sha256').update(png).digest('hex');
 
+/* At most this many images are read at once, across every document and the
+ * read route together (t-a5d9223798): about 5 s of each 12.6 s reading is
+ * Claude Code starting (t-39480258f0), and that overlaps when several run
+ * side by side. */
+export const READ_AT_ONCE = 4;
+
+/* A slot is handed straight to the next waiter when one is freed, so a
+ * caller arriving between the release and the waiter waking cannot take it
+ * and make it n + 1. */
+export function gate(n) {
+  let active = 0;
+  const waiting = [];
+  return {
+    get active() { return active; },
+    async run(fn) {
+      if (active < n) active++;
+      else await new Promise((resolve) => waiting.push(resolve));
+      try { return await fn(); } finally {
+        const next = waiting.shift();
+        if (next) next(); else active--;
+      }
+    },
+  };
+}
+
 /* The JSON asked for, also inside a code fence or after a stray line; a reply
  * that is not JSON is kept whole as the description, not asked for again
  * (t-67afbfa448). */

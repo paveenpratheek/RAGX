@@ -1,5 +1,6 @@
 /* One door for every supported format. Each reader returns
- *   { blocks: [{ kind: 'heading' | 'para' | 'code' | 'table', text, level?, page?, rows? }], pages, figures? }
+ *   { blocks: [{ kind: 'heading' | 'para' | 'code' | 'table', text, level?, page?, rows? }], pages, figures?, links? }
+ * links are images a Markdown file links on this machine, by heading path.
  * in reading order; the chunker takes the blocks from there, and figures are
  * described in figures.js.
  */
@@ -37,6 +38,7 @@ export async function extract(buf, ext) {
   }
   const out = await read(buf);
   out.figures = out.figures || [];
+  out.links = out.links || [];
   // A document of figures alone - an image file, a scanned PDF - is kept for them.
   if (!out.blocks.some((b) => b.text.trim()) && !out.figures.length) throw new ExtractError('empty', 'The document has no text.');
   return out;
