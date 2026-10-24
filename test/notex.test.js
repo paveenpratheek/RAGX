@@ -78,6 +78,21 @@ test('NoteX canvases are listed, added as NoteX\'s, and replaced when they chang
   assert.equal((await call('/api/notex')).body.files[0].status, 'added');
 });
 
+test('a canvas may give six places to a search, any other document three', async (t) => {
+  const { root, call, until, docsDir } = await serve(t);
+  const places = Array.from({ length: 7 }, (_, i) => `## Board > Area ${i + 1}\n\nThe orthorectification pipeline step ${i + 1} for SAR tiles.\n`).join('\n');
+  fs.mkdirSync(docsDir, { recursive: true });
+  fs.writeFileSync(path.join(docsDir, 'Board.notex.md'), places);
+  fs.writeFileSync(path.join(root, 'plain.md'), places.replace(/Board/g, 'Plain'));
+  await call('/api/notex/add', { method: 'POST', body: {} });
+  await call('/api/docs/path', { method: 'POST', body: { path: path.join(root, 'plain.md') } });
+  await until(async () => { const d = (await call('/api/docs')).body.docs; return d.length === 2 && d.every((x) => x.status === 'ready'); }, 'both documents');
+  const { passages } = (await call('/api/search', { method: 'POST', body: { q: 'orthorectification pipeline step for SAR tiles', k: 12 } })).body;
+  const from = (name) => passages.filter((p) => p.docName === name).length;
+  assert.equal(from('Board.notex.md'), 6);
+  assert.equal(from('plain.md'), 3);
+});
+
 test('a canvas added by hand is recognised as NoteX\'s, and the folder can be set', async (t) => {
   const { root, call, until, docsDir } = await serve(t);
   fs.mkdirSync(docsDir, { recursive: true });

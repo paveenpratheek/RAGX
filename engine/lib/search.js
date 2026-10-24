@@ -115,7 +115,7 @@ export const FIGURE_FLOOR = 0.68;
  * passages best first, each with the figures in it that the question reaches
  * (at most perPassage), then up to maxFigures figures found on their own,
  * marked by figureId (t-d3dd407413). */
-export function hybridSearch({ store, index, figureIndex = null, question, queryVector, k = 8, perDoc = 3, pool = 40,
+export function hybridSearch({ store, index, figureIndex = null, question, queryVector, k = 8, perDoc = 3, perCanvas = 6, pool = 40,
   maxFigures = 3, perPassage = 2, figureFloor = FIGURE_FLOOR }) {
   const vector = index && queryVector ? index.search(queryVector, pool) : [];
   const match = buildMatch(question);
@@ -134,7 +134,10 @@ export function hybridSearch({ store, index, figureIndex = null, question, query
     const c = store.chunk(f.id);
     if (!c) continue;
     const n = perDocCount.get(c.doc_id) || 0;
-    if (n >= perDoc) continue;
+    /* A NoteX canvas is one document of many small places; with 3 slots its
+     * area sections, which only name their notes, crowded out the note that
+     * held the answer (t-81665cc739). */
+    if (n >= (c.doc_origin === 'notex' ? perCanvas : perDoc)) continue;
     perDocCount.set(c.doc_id, n + 1);
     chosen.push({ ...c, fused: f });
   }

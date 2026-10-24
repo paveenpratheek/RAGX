@@ -61,7 +61,7 @@ export class Store {
       vectorsFor: p(`select v.chunk_id id, v.v from vectors v join chunks c on c.id = v.chunk_id
                      join documents d on d.id = c.doc_id
                      where d.status = 'ready' and d.embedded_with = ?`),
-      chunk: p(`select c.*, d.name doc_name from chunks c join documents d on d.id = c.doc_id where c.id = ?`),
+      chunk: p(`select c.*, d.name doc_name, d.origin doc_origin from chunks c join documents d on d.id = c.doc_id where c.id = ?`),
       chunkAt: p(`select c.*, d.name doc_name from chunks c join documents d on d.id = c.doc_id
                   where c.doc_id = ? and c.ord = ?`),
       fts: p(`select f.rowid id, bm25(chunks_fts) score from chunks_fts f
