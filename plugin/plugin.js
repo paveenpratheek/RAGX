@@ -286,6 +286,9 @@ function docRow(d) {
   if (d.source_path) name.title = d.source_path;
   // Taken from NoteX: a File Fabric canvas, not a file the user added (t-c30c32cbe2).
   if (d.origin === 'notex') { const b = el('span', 'origin', 'NoteX'); b.title = 'A File Fabric canvas, written by NoteX'; name.appendChild(b); }
+  // Kept in RAGX by NoteX's auto-sync: updated by itself after each save in File Fabric (t-9ba4e48993).
+  const kept = keptOf(d.name);
+  if (d.origin === 'notex' && kept) name.appendChild(keptBadge(kept));
   // Figures, and how many Claude has read: "14/16 read" (t-79cb1dcd37).
   const unread = (d.figures || 0) - (d.figures_read || 0);
   const figs = el('td', 'num', d.figures ? (unread ? `${d.figures_read || 0}/${d.figures} read` : String(d.figures)) : '');
@@ -333,17 +336,32 @@ function renderDocs() {
 async function loadNotex() {
   try { S.notex = await engine.json('GET', '/api/notex'); } catch (e) { S.notex = null; if (!(e instanceof EngineDown)) toast(e.message, true); }
   // Listing marks a library document that is a NoteX canvas by its bytes; show it at once.
-  let marked = false;
   for (const f of (S.notex && S.notex.files) || []) {
     const d = f.status === 'added' && S.docs.get(f.docId);
-    if (d && d.origin !== 'notex') { d.origin = 'notex'; marked = true; }
+    if (d && d.origin !== 'notex') d.origin = 'notex';
   }
-  if (marked) renderDocs(); else renderNotex();
+  // The rows show which canvases auto-sync keeps, so they are drawn again with the list.
+  renderDocs();
 }
 // Several documents finishing together ask once.
 function loadNotexSoon() { clearTimeout(loadNotexSoon.t); loadNotexSoon.t = setTimeout(loadNotex, 400); }
 
 const NOTEX_STATE = { new: 'Not in RAGX yet', changed: 'Changed since it was added', added: 'In the library' };
+
+/* A canvas NoteX keeps in RAGX by auto-sync, by its document's name. */
+function keptOf(name) {
+  const f = S.notex && S.notex.files && S.notex.files.find((x) => x.name === name);
+  return f && f.kept ? f.kept : null;
+}
+function ago(iso) {
+  const s = Math.round((Date.now() - Date.parse(iso)) / 1000);
+  return s < 60 ? 'just now' : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86_400 ? `${Math.round(s / 3600)} h ago` : new Date(iso).toLocaleDateString();
+}
+function keptBadge(kept) {
+  const b = el('span', 'origin kept', 'Auto-sync');
+  b.title = `NoteX keeps this canvas in RAGX: it is updated 15 s after each save in File Fabric.${kept.at ? ` Last synced ${ago(kept.at)}.` : ' Not synced yet.'} Switch it off in NoteX (Keep in RAGX).`;
+  return b;
+}
 
 function renderNotex() {
   const n = S.notex;
@@ -353,6 +371,7 @@ function renderNotex() {
   $('notex-box').hidden = S.libFilter !== 'notex';
   if (S.libFilter !== 'notex') return;
   $('notex-folder').textContent = n ? n.folder : '';
+  $('notex-kept').textContent = n && n.kept ? `Auto-sync is on for ${n.kept} canvas${n.kept === 1 ? '' : 'es'}.` : 'Auto-sync is off for every canvas - switch on Keep in RAGX in NoteX.';
   $('notex-add-all').disabled = !waiting.length;
   const files = n && n.exists ? n.files : [];
   $('notex-list').replaceChildren(...files.map((f) => {
@@ -365,7 +384,9 @@ function renderNotex() {
     if (f.docStatus && f.docStatus !== 'ready') stat.appendChild(el('div', 'note', f.docStatus));
     const acts = el('td', 'acts');
     if (f.status !== 'added') { const b = el('button', f.status === 'new' ? 'primary' : null, f.status === 'new' ? 'Add' : 'Update'); b.dataset.act = 'notex-add'; acts.appendChild(b); }
-    tr.append(name, el('td', null, new Date(f.modified).toLocaleString()), stat, acts);
+    const sync = el('td', f.kept ? 'kept' : 'note', f.kept ? `On${f.kept.at ? ` · synced ${ago(f.kept.at)}` : ' · not synced yet'}` : 'Off');
+    sync.title = f.kept ? 'NoteX updates this canvas in RAGX 15 s after each save in File Fabric.' : 'Switch on Keep in RAGX in NoteX to have it updated by itself.';
+    tr.append(name, el('td', null, new Date(f.modified).toLocaleString()), stat, sync, acts);
     return tr;
   }));
   $('notex-empty').hidden = files.length > 0;

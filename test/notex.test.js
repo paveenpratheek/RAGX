@@ -40,7 +40,7 @@ async function serve(t) {
 
 test('NoteX canvases are listed, added as NoteX\'s, and replaced when they change', async (t) => {
   const { root, call, until, docsDir } = await serve(t);
-  assert.deepEqual((await call('/api/notex')).body, { folder: docsDir, exists: false, files: [] });
+  assert.deepEqual((await call('/api/notex')).body, { folder: docsDir, exists: false, files: [], kept: 0 });
 
   fs.mkdirSync(docsDir, { recursive: true });
   fs.writeFileSync(path.join(docsDir, 'testing2.notex.md'), canvas(3));
@@ -108,6 +108,26 @@ test('a canvas added by hand is recognised as NoteX\'s, and the folder can be se
   assert.equal((await call('/api/settings', { method: 'PUT', body: { notexDocs: 'relative' } })).status, 400);
   const set = (await call('/api/settings', { method: 'PUT', body: { notexDocs: other } })).body.settings;
   assert.equal(set.notexDocs, other);
-  assert.deepEqual((await call('/api/notex')).body, { folder: other, exists: false, files: [] });
+  assert.deepEqual((await call('/api/notex')).body, { folder: other, exists: false, files: [], kept: 0 });
   assert.equal((await call('/api/settings', { method: 'PUT', body: { notexDocs: '' } })).body.settings.notexDocs, docsDir);
+});
+
+// t-9ba4e48993, t-96cbf048b2
+test('the canvases NoteX keeps in RAGX by auto-sync are marked, from its config.json', async (t) => {
+  const { call, docsDir } = await serve(t);
+  fs.mkdirSync(docsDir, { recursive: true });
+  fs.writeFileSync(path.join(docsDir, 'Thesis.notex.md'), canvas(1));
+  fs.writeFileSync(path.join(docsDir, 'Board.notex.md'), canvas(2));
+  let list = (await call('/api/notex')).body;
+  assert.equal(list.kept, 0, 'no config.json: nothing kept');
+  assert.ok(list.files.every((f) => f.kept === null));
+
+  const config = path.join(docsDir, '..', 'config.json');
+  fs.writeFileSync(config, JSON.stringify({ workspace: 'E:\ws', sync: { Thesis: { synced: 123, at: '2026-10-25T12:00:00.000Z' }, Gone: { synced: null, at: null } } }));
+  list = (await call('/api/notex')).body;
+  assert.equal(list.kept, 2, 'every canvas switched on counts, written by NoteX or not');
+  assert.deepEqual(list.files.map((f) => [f.fabric, f.kept]).sort(), [['Board', null], ['Thesis', { at: '2026-10-25T12:00:00.000Z' }]]);
+
+  fs.writeFileSync(config, '{ half written');
+  assert.equal((await call('/api/notex')).body.kept, 0, 'a config caught mid-write marks nothing rather than failing');
 });
