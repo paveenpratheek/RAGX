@@ -21,7 +21,7 @@ import { chunk, chunkApart, targetFor } from './chunk.js';
 import { Embedder, EmbedError, readSettings, writeSettings, signature, chunkInput, defaultPrefixes } from './embed.js';
 import { VectorIndex } from './vectors.js';
 import { hybridSearch, FIGURE_FLOOR } from './search.js';
-import { readImage, readingBlocks, imageKey, READ_MODEL, READ_AT_ONCE, gate } from './reader.js';
+import { readImage, readingBlocks, imageKey, READ_MODEL, READ_AT_ONCE, gate, Spare } from './reader.js';
 import { toPng } from './extract/figures.js';
 import { agentFolder, AgentError } from './agents/runner.js';
 
@@ -63,6 +63,7 @@ export class Engine {
     this.readCap = readCap;
     this.readAtOnce = readAtOnce;
     this.readGate = gate(readAtOnce);
+    this.spare = new Spare(); // one reader started ahead while images wait (t-df9b7a8cf6)
     this.reuseFor = new Map(); // document id -> its replaced version's vectors, while it is built
     // How Claude is run to read images; tests point it at a stand-in.
     this.readerOptions = readerOptions;
@@ -79,7 +80,7 @@ export class Engine {
     this.stopRequested = false; // set by a server stopping; ingest ends at its next step
   }
 
-  close() { this.store.close(); }
+  close() { this.spare.drop(); this.store.close(); }
 
   /* The vector size this model was measured to return, kept with the model's
    * name so a vector of another size is still caught after a restart
@@ -287,7 +288,8 @@ export class Engine {
     let next = 0;
     say('reading', 0, todo.length);
     /* Up to READ_AT_ONCE workers take the figures in turn; the gate is the
-     * engine's, so readings for NoteX share the same slots (t-a5d9223798).
+     * engine's, so readings for NoteX share the same slots (t-df9b7a8cf6).
+     * While figures are left, or other readings wait, a spare is kept warm.
      * A call is counted before it starts, so the cap holds with several in
      * flight. */
     const worker = async () => {
@@ -300,7 +302,10 @@ export class Engine {
         else if (calling && !readError && calls < this.readCap) {
           calls++;
           try {
-            reading = await this.readGate.run(() => readImage(png, { store: this.store, model: readModel, cwd: agentFolder(this.dir), executable: exe, agentOptions: this.readerOptions, stats }));
+            reading = await this.readGate.run(() => readImage(png, {
+              store: this.store, model: readModel, cwd: agentFolder(this.dir), executable: exe, agentOptions: this.readerOptions, stats,
+              spare: this.spare, more: () => next < todo.length || this.readGate.waiting > 0,
+            }));
           } catch (e) {
             if (!(e instanceof AgentError)) throw e;
             readError = readError || e.message;
@@ -340,15 +345,20 @@ export class Engine {
   /* One image sent on its own - NoteX's, from a File Fabric canvas - read
    * with the reading settings and kept by its content like any reading. It
    * is asked for, so it is read even with reading off, and nothing of it is
-   * stored but the reading (t-2a6293f2b7, t-1729ca9023). */
-  async readOne(buf, { stats = {} } = {}) {
+   * stored but the reading (t-2a6293f2b7, t-1729ca9023). ahead: how many
+   * more images the caller will send after this one, so a spare is started
+   * for the next (t-df9b7a8cf6). */
+  async readOne(buf, { stats = {}, ahead = 0 } = {}) {
     const img = await toPng(buf);
     if (!img) throw new EngineError('bad-image', 'The image could not be read - send a PNG, JPEG, WebP or GIF file.');
     const { readModel } = this.readingSettings();
     const exe = this.store.getMeta('claude_path', '') || null;
     const kept = this.store.reading(imageKey(img.png), readModel);
     if (kept) return { ...kept, model: readModel, cached: true };
-    const r = await this.readGate.run(() => readImage(img.png, { store: this.store, model: readModel, cwd: agentFolder(this.dir), executable: exe, agentOptions: this.readerOptions, stats }));
+    const r = await this.readGate.run(() => readImage(img.png, {
+      store: this.store, model: readModel, cwd: agentFolder(this.dir), executable: exe, agentOptions: this.readerOptions, stats,
+      spare: this.spare, more: () => ahead > 0 || this.readGate.waiting > 0,
+    }));
     return { ...r, model: readModel };
   }
 

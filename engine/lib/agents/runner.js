@@ -145,20 +145,3 @@ export function awaitAgent(agent, promise, { timeoutMs, signal }) {
     promise.then((v) => finish(resolve, v), (e) => finish(reject, e));
   });
 }
-
-/* One turn and done: start, write the input, close stdin, wait for exit.
- * Resolves with the exit code and the tail of stderr; rejects only on
- * time-out, cancel or a failure to start. */
-export async function runAgent({ executable, args, input, cwd, timeoutMs, onEvent, signal }) {
-  let thrown = null;
-  const agent = startAgent({ executable, args, cwd, onEvent: (e) => {
-    if (thrown) return;
-    try { onEvent(e); } catch (err) { thrown = err; agent.kill(); }
-  } });
-  agent.write(input);
-  agent.end();
-  const out = await awaitAgent(agent, agent.closed, { timeoutMs, signal });
-  if (agent.failed) throw agent.failed;
-  if (thrown) throw thrown;
-  return out;
-}

@@ -1,7 +1,7 @@
 /* Images for NoteX: one image read on its own through the read route, up to
- * four readings at once, and images a Markdown document links on this
+ * two readings at once, and images a Markdown document links on this
  * machine - noted under their heading, shown only from folders the user
- * listed (t-2a6293f2b7, t-a5d9223798, t-d112dfa471, t-1cfacc1b16). */
+ * listed (t-2a6293f2b7, t-df9b7a8cf6, t-d112dfa471, t-1cfacc1b16). */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -12,7 +12,7 @@ import { createCanvas } from '@napi-rs/canvas';
 import { READER } from './fixtures.js';
 import { startServer } from '../engine/lib/server.js';
 import { Embedder } from '../engine/lib/embed.js';
-import { gate } from '../engine/lib/reader.js';
+import { gate, READ_AT_ONCE, Spare } from '../engine/lib/reader.js';
 import { extractMarkdown } from '../engine/lib/extract/markdown.js';
 import { fakeOllama } from './ollama-fake.js';
 
@@ -46,7 +46,7 @@ async function serve(t) {
 }
 
 test('the gate lets at most n run at once and hands a freed slot on', async () => {
-  const g = gate(4);
+  const g = gate(READ_AT_ONCE);
   let now = 0, most = 0;
   const done = [];
   await Promise.all(Array.from({ length: 10 }, (_, i) => g.run(async () => {
@@ -54,7 +54,7 @@ test('the gate lets at most n run at once and hands a freed slot on', async () =
     await new Promise((r) => setTimeout(r, 20));
     now--; done.push(i);
   })));
-  assert.equal(most, 4);
+  assert.equal(most, READ_AT_ONCE);
   assert.equal(done.length, 10);
   assert.equal(g.active, 0);
 });
@@ -84,6 +84,33 @@ test('the read route reads one image and keeps the reading', async (t) => {
   assert.equal(again.text, r.text);
   const bad = await call('/api/read-image', { method: 'POST', raw: true, body: Buffer.from('not an image') });
   assert.equal(bad.status, 400);
+});
+
+test('a spare reader is started while more images are said to come, and taken by the next', async (t) => {
+  const { call } = await serve(t);
+  const read = async (colour, ahead) => (await call('/api/read-image', { method: 'POST', raw: true, body: png(300, 200, colour), headers: { 'x-read-ahead': String(ahead) } })).json();
+  const first = await read('#111111', 2);
+  assert.equal(first.warm, false, 'nothing was started ahead of the first');
+  const second = await read('#222222', 1);
+  assert.equal(second.warm, true);
+  assert.match(second.description, /1 image given/, 'one image, not the earlier one with it');
+  const third = await read('#333333', 0);
+  assert.equal(third.warm, true);
+  const fourth = await read('#444444', 0);
+  assert.equal(fourth.warm, false, 'no spare is left behind once none were said to come');
+});
+
+test('a spare nobody takes is closed', async () => {
+  const spare = new Spare({ idleMs: 100 });
+  spare.warm('k', { system: 's', model: 'haiku', persist: false, cwd: os.tmpdir(), ...READER });
+  assert.equal(spare.ready, true);
+  const pid = spare.run.agent.pid;
+  assert.equal(spare.take('other model'), null, 'a reader started another way is not used');
+  assert.equal(spare.ready, false);
+  spare.warm('k', { system: 's', model: 'haiku', persist: false, cwd: os.tmpdir(), ...READER });
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(spare.ready, false);
+  assert.ok(pid);
 });
 
 test('a cited place brings its linked images, shown only from listed folders', async (t) => {

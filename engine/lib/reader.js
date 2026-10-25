@@ -39,10 +39,13 @@ export const READ_SYSTEM = [
 export const imageKey = (png) => crypto.createHash('sha256').update(png).digest('hex');
 
 /* At most this many images are read at once, across every document and the
- * read route together (t-a5d9223798): about 5 s of each 12.6 s reading is
- * Claude Code starting (t-39480258f0), and that overlaps when several run
- * side by side. */
-export const READ_AT_ONCE = 4;
+ * read route together, with one spare reader started ahead while more are
+ * waiting: at most three Claude Code processes, about 165 MB each, on a
+ * laptop with about 1.4 GB of RAM free (t-df9b7a8cf6, t-2ea39541ff). */
+export const READ_AT_ONCE = 2;
+
+/* How long a spare nobody took waits before it is closed. */
+export const SPARE_IDLE_MS = 30_000;
 
 /* A slot is handed straight to the next waiter when one is freed, so a
  * caller arriving between the release and the waiter waking cannot take it
@@ -52,6 +55,7 @@ export function gate(n) {
   const waiting = [];
   return {
     get active() { return active; },
+    get waiting() { return waiting.length; },
     async run(fn) {
       if (active < n) active++;
       else await new Promise((resolve) => waiting.push(resolve));
@@ -61,6 +65,41 @@ export function gate(n) {
       }
     },
   };
+}
+
+/* One Claude Code reader started ahead, while more images are waiting, so
+ * the next reading skips about 2 s of start-up (t-7f85ad2c96). It reads one
+ * image and exits like any reader - an image's conversation never reaches
+ * the next (t-2bc75de11d) - and one nobody takes is closed after
+ * SPARE_IDLE_MS. It is taken only by a reading run the same way: same
+ * model, folder and executable. */
+export class Spare {
+  constructor({ idleMs = SPARE_IDLE_MS } = {}) { this.idleMs = idleMs; this.run = null; this.key = null; this.timer = null; }
+
+  get ready() { return Boolean(this.run && !this.run.agent.exited); }
+
+  take(key) {
+    if (!this.ready || this.key !== key) { this.drop(); return null; }
+    const run = this.run;
+    clearTimeout(this.timer);
+    this.run = null; this.key = null;
+    return run;
+  }
+
+  warm(key, opts) {
+    if (this.ready && this.key === key) return;
+    this.drop();
+    try { this.run = claude.start(opts); } catch (_) { return; } // the reading itself reports a missing Claude
+    this.key = key;
+    this.timer = setTimeout(() => this.drop(), this.idleMs);
+    this.timer.unref?.();
+  }
+
+  drop() {
+    clearTimeout(this.timer);
+    if (this.run) this.run.agent.kill();
+    this.run = null; this.key = null;
+  }
 }
 
 /* The JSON asked for, also inside a code fence or after a stray line; a reply
@@ -77,8 +116,10 @@ export function parseReading(reply) {
 
 /* One image read, or its kept reading. stats counts reads, cache hits and
  * the time spent, for the tracker. Throws the agent's error - the caller
- * decides what a failed reading means for the document (t-64a996ef5a). */
-export async function readImage(png, { store, model = READ_MODEL, cwd, executable = null, signal, agentOptions = {}, stats = null }) {
+ * decides what a failed reading means for the document (t-64a996ef5a).
+ * spare and more(): the engine's spare reader is taken if it fits, and a new
+ * one started while more() says other images are waiting. */
+export async function readImage(png, { store, model = READ_MODEL, cwd, executable = null, signal, agentOptions = {}, stats = null, spare = null, more = () => false }) {
   const key = imageKey(png);
   const kept = store.reading(key, model);
   if (kept) {
@@ -86,9 +127,14 @@ export async function readImage(png, { store, model = READ_MODEL, cwd, executabl
     return { ...kept, cached: true };
   }
   const started = Date.now();
-  const r = await claude.ask({
-    prompt: 'Read this image.', images: [{ label: 'The image:', png }], system: READ_SYSTEM, model, persist: false,
-    cwd, executable, signal, timeoutMs: READ_TIMEOUT_MS, ...agentOptions,
+  const opts = { system: READ_SYSTEM, model, persist: false, cwd, executable, ...agentOptions };
+  const how = JSON.stringify([model, cwd, executable, agentOptions.executable || null, agentOptions.prefixArgs || []]);
+  const taken = spare ? spare.take(how) : null;
+  const run = taken || claude.start(opts);
+  if (spare && more()) spare.warm(how, opts);
+  if (stats && taken) stats.warm = (stats.warm || 0) + 1;
+  const r = await claude.finish(run, {
+    prompt: 'Read this image.', images: [{ label: 'The image:', png }], signal, timeoutMs: READ_TIMEOUT_MS, ...agentOptions,
   });
   const reading = { ...parseReading(r.text), ms: Date.now() - started };
   store.putReading(key, model, reading);

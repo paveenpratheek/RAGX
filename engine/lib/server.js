@@ -437,13 +437,15 @@ export async function startServer({
       const started = Date.now();
       const stats = {};
       let r;
-      try { r = await engine.readOne(buf, { stats }); } catch (e) {
+      // X-Read-Ahead: how many more images NoteX will send after this one.
+      const ahead = Math.max(0, Number(req.headers['x-read-ahead']) || 0);
+      try { r = await engine.readOne(buf, { stats, ahead }); } catch (e) {
         tracker.record({ ...who, kind: 'read', question: name, ms: Date.now() - started, error: e.message });
         throw e;
       }
       tracker.record({ ...who, kind: 'read', question: name, ms: Date.now() - started, results: 1,
-        timings: { readMs: stats.readMs || 0, reads: stats.reads || 0, readCached: r.cached ? 1 : 0 }, detail: { model: r.model, cached: Boolean(r.cached), kind: r.kind } });
-      return json(200, { kind: r.kind, text: r.text, description: r.description, parsed: r.parsed, model: r.model, cached: Boolean(r.cached), ms: r.ms ?? null });
+        timings: { readMs: stats.readMs || 0, reads: stats.reads || 0, readCached: r.cached ? 1 : 0 }, detail: { model: r.model, cached: Boolean(r.cached), kind: r.kind, warm: Boolean(stats.warm) } });
+      return json(200, { kind: r.kind, text: r.text, description: r.description, parsed: r.parsed, model: r.model, cached: Boolean(r.cached), ms: r.ms ?? null, warm: Boolean(stats.warm) });
     }
 
     if ((p = m('GET', /^\/api\/docs\/(\d+)\/figures$/))) {

@@ -10,7 +10,7 @@
  * resumed - reading an image - keeps no session in the user's Claude history
  * (t-7ab84e8281).
  */
-import { runAgent, findExecutable, AgentError } from './runner.js';
+import { startAgent, awaitAgent, findExecutable, AgentError } from './runner.js';
 
 export const id = 'claude';
 export const DEFAULT_MODEL = 'sonnet';
@@ -47,26 +47,41 @@ function classify(message) {
   return new AgentError('failed', `Claude did not answer: ${message}`);
 }
 
-export async function ask({ prompt, images = [], system, model = DEFAULT_MODEL, resume = null, persist = true, cwd, executable = null,
-  prefixArgs = [], onDelta = () => {}, signal, timeoutMs = 180_000 /* t-293b4573a1 */ }) {
+/* A Claude Code process started and waiting for its one input, so its
+ * start-up is done before the question or image arrives - a spare reader
+ * started ahead (t-df9b7a8cf6). It answers one input and exits: nothing of
+ * one run reaches the next (t-2bc75de11d). */
+export function start({ system, model = DEFAULT_MODEL, resume = null, persist = true, cwd, executable = null, prefixArgs = [] }) {
   const exe = executable || findExecutable('claude');
-  const state = { init: null, result: null, streamed: false };
-  const started = Date.now();
-  const { code, stderr } = await runAgent({
+  const state = { init: null, result: null, streamed: false, onDelta: () => {}, thrown: null };
+  const agent = startAgent({
     executable: exe,
     args: [...prefixArgs, ...args({ model, system, resume, persist })],
-    input: input(prompt, images),
     cwd,
-    timeoutMs,
-    signal,
     onEvent(e) {
-      if (e.type === 'system' && e.subtype === 'init') state.init = e;
-      else if (e.type === 'stream_event') {
-        const d = e.event && e.event.delta;
-        if (d && d.type === 'text_delta' && d.text) { state.streamed = true; onDelta(d.text); }
-      } else if (e.type === 'result') state.result = e;
+      if (state.thrown) return;
+      try {
+        if (e.type === 'system' && e.subtype === 'init') state.init = e;
+        else if (e.type === 'stream_event') {
+          const d = e.event && e.event.delta;
+          if (d && d.type === 'text_delta' && d.text) { state.streamed = true; state.onDelta(d.text); }
+        } else if (e.type === 'result') state.result = e;
+      } catch (err) { state.thrown = err; agent.kill(); }
     },
   });
+  return { agent, state, model };
+}
+
+/* Gives a started process its one input and waits for its answer. */
+export async function finish(run, { prompt, images = [], onDelta = () => {}, signal, timeoutMs = 180_000 /* t-293b4573a1 */ }) {
+  const { agent, state, model } = run;
+  state.onDelta = onDelta;
+  const started = Date.now();
+  agent.write(input(prompt, images));
+  agent.end();
+  const { code, stderr } = await awaitAgent(agent, agent.closed, { timeoutMs, signal });
+  if (agent.failed) throw agent.failed;
+  if (state.thrown) throw state.thrown;
   const r = state.result;
   if (!r) throw classify(stderr || `claude exited with code ${code} and no result`);
   if (r.is_error || (r.subtype && r.subtype !== 'success')) throw classify(String(r.result || r.subtype));
@@ -82,3 +97,5 @@ export async function ask({ prompt, images = [], system, model = DEFAULT_MODEL, 
     ms: Date.now() - started,
   };
 }
+
+export async function ask(opts) { return finish(start(opts), opts); }
