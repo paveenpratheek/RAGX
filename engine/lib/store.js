@@ -45,6 +45,8 @@ export class Store {
                        where id = ?`),
       setError: p('update documents set error = ?, updated_at = ? where id = ?'),
       docVectors: p('select v.chunk_id id, v.v from vectors v join chunks c on c.id = v.chunk_id where c.doc_id = ?'),
+      docInputs: p('select c.heading, c.text, v.v from vectors v join chunks c on c.id = v.chunk_id where c.doc_id = ?'),
+      scoped: p("select id, scope from conversations where scope is not null and scope <> '[]'"),
       docChunkIds: p('select id from chunks where doc_id = ?'),
       removeDoc: p('delete from documents where id = ?'),
       deleteChunks: p('delete from chunks where doc_id = ?'),
@@ -141,6 +143,9 @@ export class Store {
 
   docVectors(docId) { return this.q.docVectors.all(docId).map((r) => ({ id: r.id, vector: fromBlob(r.v) })); }
   docChunkIds(docId) { return this.q.docChunkIds.all(docId).map((r) => r.id); }
+  /* A document's embedded chunks with what was embedded for each, so a new
+   * version can take the vectors of chunks it shares (t-3d4a82831b). */
+  docInputs(docId) { return this.q.docInputs.all(docId).map((r) => ({ heading: r.heading, text: r.text, vector: fromBlob(r.v) })); }
 
   setReady(id, embeddedWith) {
     const { n } = this.q.chunkCount.get(id);
@@ -263,6 +268,19 @@ export class Store {
   /* The documents a conversation searches: an array of ids, or null for all
    * of them (t-c323b2002a). */
   setScope(conversationId, docIds) { this.q.setScope.run(docIds ? JSON.stringify(docIds) : null, conversationId); }
+
+  /* A document replaced by its new version stays chosen wherever the old one
+   * was, so a conversation kept to a canvas follows its updates (t-701188a6d1). */
+  carryScope(oldId, newId) {
+    let n = 0;
+    for (const { id, scope } of this.q.scoped.all()) {
+      const ids = JSON.parse(scope);
+      if (!ids.includes(oldId)) continue;
+      this.setScope(id, [...new Set(ids.map((d) => (d === oldId ? newId : d)))]);
+      n++;
+    }
+    return n;
+  }
 
   /* A conversation holds its agent's session and its own numbering of
    * sources, so [3] means the same passage for as long as it runs. A source

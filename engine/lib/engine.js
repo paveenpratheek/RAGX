@@ -63,6 +63,7 @@ export class Engine {
     this.readCap = readCap;
     this.readAtOnce = readAtOnce;
     this.readGate = gate(readAtOnce);
+    this.reuseFor = new Map(); // document id -> its replaced version's vectors, while it is built
     // How Claude is run to read images; tests point it at a stand-in.
     this.readerOptions = readerOptions;
     this.dir = dir;
@@ -136,7 +137,9 @@ export class Engine {
    * bad document - the result says what happened to it. */
   /* name and sourcePath default to the file's own; an upload passes the name
    * it was sent under and no source path, since its file is a temporary. */
-  async ingest(filePath, { onProgress = () => {}, name = null, sourcePath, origin = null } = {}) {
+  /* reuseFrom: the document this one replaces - its vectors are taken for
+   * every chunk embedded the same way (t-3d4a82831b). */
+  async ingest(filePath, { onProgress = () => {}, name = null, sourcePath, origin = null, reuseFrom = null } = {}) {
     const abs = path.resolve(filePath);
     const shown = name || path.basename(abs);
     const ext = path.extname(shown).toLowerCase();
@@ -160,7 +163,18 @@ export class Engine {
       if (!fs.existsSync(copy)) fs.writeFileSync(copy, buf);
       id = this.store.addDoc({ sha256, name: shown, ext, sourcePath: sourcePath === undefined ? abs : sourcePath, bytes: buf.length, origin });
     }
-    return this.process(id, { onProgress, label: known ? 'resumed' : 'added' });
+    return this.process(id, { onProgress, label: known ? 'resumed' : 'added', reuseFrom });
+  }
+
+  /* The old version's vectors by what was embedded for them - only when it
+   * was embedded with the model and settings in use now, since a vector from
+   * another signature lives in another space. */
+  reusable(oldId, name) {
+    const old = oldId ? this.store.doc(oldId) : null;
+    if (!old || old.embedded_with !== this.embedder.signature) return null;
+    const map = new Map();
+    for (const c of this.store.docInputs(old.id)) map.set(chunkInput(name, c.heading, c.text), c.vector);
+    return map.size ? map : null;
   }
 
   async resume({ onProgress = () => {} } = {}) {
@@ -172,9 +186,11 @@ export class Engine {
   /* A new document's figures are read with new calls; a document rebuilt -
    * re-indexed, re-embedded, resumed - takes only readings already kept, so
    * the library is never read again without the user asking (t-072171490b). */
-  async process(id, { onProgress = () => {}, label = 'added' } = {}) {
+  async process(id, { onProgress = () => {}, label = 'added', reuseFrom = null } = {}) {
     const readMode = label === 'added' ? 'call' : 'kept';
     let doc = this.store.doc(id);
+    const reuse = this.reusable(reuseFrom, doc.name);
+    if (reuse) this.reuseFor.set(id, reuse);
     const sig = this.embedder.signature;
     const say = (phase, done, total) => onProgress({ doc, phase, done, total });
     const started = Date.now();
@@ -192,7 +208,7 @@ export class Engine {
       doc = this.store.doc(id);
       this.indexAdd(id);
       say('ready', doc.chunks, doc.chunks);
-      return { status: label, doc, ...built, timings: timingsOf(stats, started) };
+      return { status: label, doc, ...built, ...(reuse ? { reused: stats.reused || 0 } : {}), timings: timingsOf(stats, started) };
     } catch (e) {
       /* A document that cannot be read is in error for good. Ollama stopped,
        * or the model not pulled, leaves the status as it was, so the next
@@ -204,6 +220,8 @@ export class Engine {
       doc = this.store.doc(id);
       say('error');
       return { status: 'error', doc, error: e.message, code: e.code, timings: timingsOf(stats, started) };
+    } finally {
+      this.reuseFor.delete(id);
     }
   }
 
@@ -365,7 +383,7 @@ export class Engine {
    * vectors, so they are not searched until a model that can embeds them
    * (t-99e7177c73). */
   async embedMissing(doc, say, stats = null) {
-    const todo = this.store.unembedded(doc.id);
+    let todo = this.store.unembedded(doc.id);
     const figures = (await this.canSee()) ? this.store.unembeddedFigures(doc.id) : [];
     const chunkTotal = this.store.docChunkIds(doc.id).length;
     const figureTotal = figures.length ? this.store.docFigureIds(doc.id).length : 0;
@@ -373,6 +391,23 @@ export class Engine {
     let done = total - todo.length - figures.length;
     say('embedding', done, total);
     const stop = () => { if (this.stopRequested) throw new EngineError('stopped', 'Stopped; the rest is embedded on the next start.'); };
+    // Chunks a replaced version embedded the same way take its vectors as they are.
+    const reuse = this.reuseFor.get(doc.id);
+    if (reuse && todo.length) {
+      const taken = [];
+      for (const c of todo) {
+        const v = reuse.get(chunkInput(doc.name, c.heading, c.text));
+        if (v) taken.push({ id: c.id, vector: v });
+      }
+      if (taken.length) {
+        this.store.putVectors(taken);
+        const got = new Set(taken.map((t) => t.id));
+        todo = todo.filter((c) => !got.has(c.id));
+        if (stats) stats.reused = (stats.reused || 0) + taken.length;
+        done += taken.length;
+        say('embedding', done, total);
+      }
+    }
     for (let i = 0; i < todo.length; i += STEP) {
       stop();
       const part = todo.slice(i, i + STEP);

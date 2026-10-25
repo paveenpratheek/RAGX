@@ -349,12 +349,20 @@ export async function startServer({
         const file = notexFile(st.folder, String(name));
         if (!entry || !file) throw new HttpError(404, 'not-found', `No ${name} in ${st.folder}.`);
         if (entry.status === 'added') continue;
-        const old = entry.status === 'changed' ? entry.docId : null;
+        /* Which versions it replaces is settled when the job runs, not when it
+         * is asked: auto-sync can queue a canvas again while its last version
+         * is still embedding, and every older version must go (t-e278abc970). */
         enqueue(name, async () => {
-          const r = await engine.ingest(file, { onProgress, origin: 'notex' });
-          if (old && r.status !== 'error' && r.doc && r.doc.id !== old && engine.store.doc(old)) {
-            engine.remove(old);
-            emit({ type: 'removed', docId: old, name, replacedBy: r.doc.id });
+          const older = () => engine.store.docs().filter((d) => d.origin === 'notex' && d.name === name);
+          const ready = older().filter((d) => d.status === 'ready');
+          const reuseFrom = ready.length ? ready[ready.length - 1].id : null;
+          const r = await engine.ingest(file, { onProgress, origin: 'notex', reuseFrom });
+          if (r.status === 'error' || !r.doc) return r;
+          for (const d of older()) {
+            if (d.id === r.doc.id) continue;
+            engine.store.carryScope(d.id, r.doc.id);
+            engine.remove(d.id);
+            emit({ type: 'removed', docId: d.id, name, replacedBy: r.doc.id });
           }
           return r;
         }, null, { ...whoIs(req), kind: 'ingest' });

@@ -242,3 +242,37 @@ test('live: a question worded differently from the document finds it by meaning'
   assert.equal(passages[0].docName, 'leave.txt');
   assert.equal(passages[0].ranks.keyword, null, 'no word of the question is in the document - found by meaning alone');
 });
+
+// t-3d4a82831b
+test('a new version re-embeds only the places that changed, and conversations kept to it follow', async (t) => {
+  const { root, engine, ollama } = setup(t);
+  const e = engine();
+  const place = (n, text) => `## Research > Area ${n}\n\n${text}\n`;
+  const v1 = [place(1, 'The survey covers spatial memory.'), place(2, 'Gap papers list three open problems.'), place(3, 'Literature notes are kept per totem.')].join('\n');
+  const dir1 = path.join(root, 'v1'); const dir2 = path.join(root, 'v2');
+  fs.mkdirSync(dir1); fs.mkdirSync(dir2);
+  fs.writeFileSync(path.join(dir1, 'canvas.notex.md'), v1);
+  const first = await e.ingest(path.join(dir1, 'canvas.notex.md'), { origin: 'notex' });
+  assert.equal(first.status, 'added');
+  const chunks = first.doc.chunks;
+  assert.ok(chunks >= 3, `one chunk a place, got ${chunks}`);
+  const conv = e.store.addConversation({ agent: 'claude', model: 'm', title: 'q' });
+  e.store.setScope(conv, [first.doc.id, 999]);
+
+  const v2 = v1.replace('three open problems', 'four open problems');
+  fs.writeFileSync(path.join(dir2, 'canvas.notex.md'), v2);
+  const before = ollama.inputs.length;
+  const second = await e.ingest(path.join(dir2, 'canvas.notex.md'), { origin: 'notex', reuseFrom: first.doc.id });
+  assert.equal(second.status, 'added');
+  const sent = ollama.inputs.slice(before);
+  assert.equal(sent.length, 1, 'only the changed place is embedded');
+  assert.match(sent[0], /four open problems/);
+  assert.equal(second.reused, second.doc.chunks - 1);
+  // The taken vectors are the old ones, so search finds the unchanged places in the new version.
+  e.remove(first.doc.id);
+  const hits = await e.search('spatial memory survey');
+  assert.equal(hits.passages[0].doc_id ?? hits.passages[0].docId, second.doc.id);
+
+  assert.equal(e.store.carryScope(first.doc.id, second.doc.id), 1);
+  assert.deepEqual(e.store.conversation(conv).scope, [second.doc.id, 999]);
+});

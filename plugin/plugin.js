@@ -225,6 +225,11 @@ function onEvent(e) {
       break;
     case 'removed':
       S.docs.delete(e.docId);
+      // A canvas updated by NoteX stays chosen in this conversation as its new version (t-701188a6d1).
+      if (S.scope && S.scope.includes(e.docId)) {
+        S.scope = e.replacedBy ? [...new Set(S.scope.map((id) => (id === e.docId ? e.replacedBy : id)))] : S.scope.filter((id) => id !== e.docId);
+        renderScope();
+      }
       renderDocs();
       loadNotexSoon();
       break;
