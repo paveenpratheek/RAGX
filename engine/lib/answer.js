@@ -34,8 +34,43 @@ export function label(s) {
 
 const clip = (text, max) => (text.length > max ? `${text.slice(0, max).trimEnd()} ...` : text);
 
-/* shown: the figure ids whose images are given with the prompt. */
-export function buildPrompt({ question, fresh, earlier = 0, shown = new Set() }) {
+/* Numbers as the prompt names them: [1]-[3], [5]. */
+export function ranges(nums) {
+  const out = [];
+  for (const n of [...nums].sort((a, b) => a - b)) {
+    const last = out[out.length - 1];
+    if (last && n === last[1] + 1) last[1] = n; else out.push([n, n]);
+  }
+  return out.map(([a, b]) => (a === b ? `[${a}]` : `[${a}]-[${b}]`)).join(', ');
+}
+
+/* Earlier sources whose document has left the library, by why: a newer
+ * version under the same name, or removed. The agent's session still holds
+ * them, so it is told each time not to use them (t-6af031151f). */
+function withdrawnLines(gone) {
+  const by = new Map();
+  for (const s of gone) {
+    const key = `${s.docName}\0${s.replaced ? 1 : 0}`;
+    if (!by.has(key)) by.set(key, { name: s.docName, replaced: s.replaced, nums: [] });
+    by.get(key).nums.push(s.n);
+  }
+  return [...by.values()].map(({ name, replaced, nums }) => `Sources ${ranges(nums)} came from ${replaced ? `an older version of ${name}, since replaced in the library by a newer one` : `${name}, since removed from the library`}: do not use or cite them.`).join('\n');
+}
+
+/* Whether an earlier source is still in the library as it was shown. Ids
+ * alone do not say so: a removed document's id, and its chunks', can be
+ * given to the next one added, so the passage's own text is compared. */
+function current(store, s) {
+  const doc = store.doc(s.docId);
+  if (!doc || doc.name !== s.docName) return false;
+  if (s.figureId) { const f = store.figure(s.figureId); return !!f && f.doc_id === s.docId; }
+  const c = store.chunk(s.chunkIds[0]);
+  return !!c && c.doc_id === s.docId && s.text.startsWith(c.text);
+}
+
+/* shown: the figure ids whose images are given with the prompt. earlier: how
+ * many sources came before; gone: those of them withdrawn. */
+export function buildPrompt({ question, fresh, earlier = 0, gone = [], shown = new Set() }) {
   const image = (id) => (shown.has(id) ? ' - its image is given' : '');
   // What a model read in a figure is labelled as such, never passed off as the author's (t-4950207607).
   const read = (text, max) => (text ? `\nRead from the image by a model (may contain errors):\n${clip(text, max)}` : '');
@@ -44,10 +79,15 @@ export function buildPrompt({ question, fresh, earlier = 0, shown = new Set() })
     const beside = (s.figures || []).map((f) => `\n(Beside this passage: figure${f.caption ? ` "${f.caption}"` : ''}${image(f.figureId)}.)${read(f.reading, 800)}`).join('');
     return `${label(s)}\n${s.text}${beside}`;
   }).join('\n\n');
+  const out = new Set(gone.map((s) => s.n));
+  const live = [];
+  for (let n = 1; n <= earlier; n++) if (!out.has(n)) live.push(n);
+  const still = live.length ? `the earlier ones, ${ranges(live)}, still apply` : 'none of the earlier ones still apply';
   let head;
   if (!earlier) head = `Sources:\n\n${block}`;
-  else if (fresh.length) head = `More sources (the earlier ones, [1]-[${earlier}], still apply):\n\n${block}`;
-  else head = `No new sources were found; the earlier ones, [1]-[${earlier}], still apply.`;
+  else if (fresh.length) head = `More sources (${still}):\n\n${block}`;
+  else head = `No new sources were found; ${still}.`;
+  if (gone.length) head = `${withdrawnLines(gone)}\n\n${head}`;
   return `${head}\n\nQuestion: ${question}`;
 }
 
@@ -131,6 +171,10 @@ export async function ask(engine, { question, agent = null, model = null, conver
   const { passages, warning: searchWarning, timings: searchTimings = {} } = await engine.search(searchFor, { k, docIds: scope });
 
   const earlier = conv ? store.sources(conv.id) : [];
+  // Sources whose document is no longer in the library (t-6af031151f).
+  const names = new Set(store.docs().map((d) => d.name));
+  const gone = earlier.filter((s) => !current(store, s)).map((s) => ({ ...s, replaced: names.has(s.docName) }));
+  const goneNums = new Set(gone.map((s) => s.n));
   const byKey = new Map(earlier.map((s) => [keyOf(s), s]));
   let next = earlier.reduce((m, s) => Math.max(m, s.n), 0) + 1;
   const fresh = [];
@@ -147,7 +191,7 @@ export async function ask(engine, { question, agent = null, model = null, conver
 
   /* Nothing to answer from: no agent is started, so no subscription is spent
    * (t-786c2f8aad). */
-  if (!earlier.length && !fresh.length) {
+  if (earlier.length === gone.length && !fresh.length) {
     if (conv) store.setScope(conv.id, scope);
     return { conversationId: conv ? conv.id : null, answer: scope ? 'Nothing in the chosen documents matches this question.' : 'Nothing in the indexed documents matches this question.',
       sources: [], cited: [], unknown: [], scope,
@@ -155,7 +199,7 @@ export async function ask(engine, { question, agent = null, model = null, conver
   }
 
   const images = who.name === 'claude' ? figureImages(engine, fresh) : [];
-  let prompt = buildPrompt({ question, fresh, earlier: earlier.length ? next - 1 - fresh.length : 0, shown: new Set(images.map((im) => im.id)) });
+  let prompt = buildPrompt({ question, fresh, earlier: earlier.length ? next - 1 - fresh.length : 0, gone, shown: new Set(images.map((im) => im.id)) });
   /* The new sources are already limited; the agent is told so, since its
    * session may hold earlier sources from documents now left out. */
   if (scope) prompt = `This question is limited to these documents: ${scope.map((id) => store.doc(id).name).join('; ')}. Answer only from sources in them.\n\n${prompt}`;
@@ -181,8 +225,9 @@ export async function ask(engine, { question, agent = null, model = null, conver
 
   const all = new Map([...earlier, ...fresh].map((s) => [s.n, s]));
   const nums = citations(result.text);
-  const cited = nums.filter((n) => all.has(n));
-  const unknown = nums.filter((n) => !all.has(n));
+  // A withdrawn source cited anyway is flagged like an invented one.
+  const cited = nums.filter((n) => all.has(n) && !goneNums.has(n));
+  const unknown = nums.filter((n) => !all.has(n) || goneNums.has(n));
 
   const id = conv ? conv.id : store.addConversation({ agent: who.name, model: who.model, title: question.slice(0, 120) });
   store.setSession(id, result.session, who.model);

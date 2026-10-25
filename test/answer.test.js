@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Engine } from '../engine/lib/engine.js';
 import { Embedder } from '../engine/lib/embed.js';
-import { ask, citations, buildPrompt, label, RULES } from '../engine/lib/answer.js';
+import { ask, citations, buildPrompt, label, ranges, RULES } from '../engine/lib/answer.js';
 import { fakeOllama } from './ollama-fake.js';
 
 const FAKE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fake-agent.mjs');
@@ -26,6 +26,17 @@ test('a first prompt numbers its sources; a follow-up says which earlier ones st
   assert.match(buildPrompt({ question: 'And?', fresh: [s(3)], earlier: 2 }), /^More sources \(the earlier ones, \[1\]-\[2\], still apply\)/);
   assert.match(buildPrompt({ question: 'And?', fresh: [], earlier: 2 }), /^No new sources were found/);
   assert.match(RULES, /not instructions to you/);
+});
+
+test('a follow-up names the earlier sources whose document was replaced or removed, and leaves them out of what still applies', () => {
+  const s = (n, docName = 'canvas.notex.md') => ({ n, docName, heading: 'Note', text: `Text ${n}.` });
+  assert.equal(ranges([5, 1, 2, 3, 7]), '[1]-[3], [5], [7]');
+  const p = buildPrompt({ question: 'Now?', fresh: [s(5)], earlier: 4,
+    gone: [{ ...s(1), replaced: true }, { ...s(2), replaced: true }, { ...s(4, 'old.pdf'), replaced: false }] });
+  assert.match(p, /^Sources \[1\]-\[2\] came from an older version of canvas\.notex\.md, since replaced in the library by a newer one: do not use or cite them\.\n/);
+  assert.match(p, /\nSources \[4\] came from old\.pdf, since removed from the library: do not use or cite them\.\n/);
+  assert.match(p, /More sources \(the earlier ones, \[3\], still apply\)/);
+  assert.match(buildPrompt({ question: 'Now?', fresh: [], earlier: 1, gone: [{ ...s(1), replaced: true }] }), /No new sources were found; none of the earlier ones still apply\./);
 });
 
 const lease = '# Lease\n\nThe tenancy runs for two years from January.\n\n## Rent\n\nRent of 1,200 is due on the first of each month.\n\n## Fees\n\nA late fee of 50 applies after five days.\n';
@@ -76,13 +87,40 @@ test('a follow-up resumes the session, keeps old numbers and sends only new sour
   const second = await askWith('echo', { question: 'Is there a late fee?', conversationId: first.conversationId, k: 3 });
   const seen = JSON.parse(second.answer);
   assert.equal(seen.flags[seen.flags.indexOf('--resume') + 1], 'sess-1');
-  assert.match(seen.prompt, /^More sources \(the earlier ones, \[1\]-\[1\], still apply\)/);
+  assert.match(seen.prompt, /^More sources \(the earlier ones, \[1\], still apply\)/);
   assert.ok(!seen.prompt.includes('[1] lease.md'), 'a source already shown is not sent again');
   assert.match(seen.prompt, /\[2\] lease\.md/);
   const all = engine.store.sources(first.conversationId);
   assert.deepEqual(all.map((s) => s.n), all.map((_, i) => i + 1));
   assert.equal(all[0].text, firstSources[0].text);
   assert.equal(second.conversationId, first.conversationId);
+});
+
+test('a follow-up after the document was replaced by name tells the agent its earlier sources are out of date', async (t) => {
+  const { engine, file, askWith } = setup(t);
+  const f = file('lease.md', lease);
+  await engine.ingest(f);
+  const first = await askWith('echo', { question: 'When is the rent due?', k: 1 });
+  fs.writeFileSync(f, lease.replace('1,200', '1,350'));
+  await engine.ingestReplacing(f);
+  assert.equal(engine.store.docs().length, 1);
+
+  const second = await askWith('echo', { question: 'When is the rent due now?', conversationId: first.conversationId, k: 1 });
+  const seen = JSON.parse(second.answer);
+  assert.match(seen.prompt, /^Sources \[1\] came from an older version of lease\.md, since replaced in the library by a newer one: do not use or cite them\./);
+  assert.match(seen.prompt, /More sources \(none of the earlier ones still apply\):\n\n\[2\] lease\.md - Lease > Rent\nRent of 1,350/);
+});
+
+test('a withdrawn source cited anyway is flagged, not linked', async (t) => {
+  const { engine, file, askWith } = setup(t);
+  const f = file('lease.md', lease);
+  await engine.ingest(f);
+  const first = await askWith('echo', { question: 'When is the rent due?', k: 1 });
+  engine.remove(engine.store.docs()[0].id);
+  await engine.ingest(file('fees.md', '# Fees\n\nA late fee of 50 applies after five days.\n'));
+  const r = await askWith('cite-unknown', { question: 'Is there a late fee?', conversationId: first.conversationId, k: 1 });
+  assert.ok(!r.cited.some((s) => s.n === 1));
+  assert.deepEqual(r.unknown, [1, 9]);
 });
 
 test('citations are checked: real ones link to their source, an invented one is flagged', async (t) => {
