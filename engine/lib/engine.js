@@ -432,7 +432,14 @@ export class Engine {
    * every document must be re-embedded first (t-8e7cd345f4). If Ollama is not
    * answering, keyword search still runs, and the result says so
    * (t-e5bb354516). */
-  async search(question, { k = 8 } = {}) {
+  /* docIds: only these documents, or null for all. Ids of documents since
+   * removed simply drop out; none left means nothing is searched, never
+   * everything (t-6fbca7a8a6). */
+  async search(question, { k = 8, docIds = null } = {}) {
+    if (docIds) {
+      docIds = [...new Set(docIds.map(Number))].filter((id) => this.store.doc(id));
+      if (!docIds.length) return { passages: [], warning: null, timings: { embedMs: 0, loadMs: 0, searchMs: 0 } };
+    }
     const stale = this.store.staleDocs(this.embedder.signature);
     if (stale.length) {
       throw new EngineError('needs-reembed',
@@ -452,7 +459,7 @@ export class Engine {
       }
     }
     const t = Date.now();
-    const passages = hybridSearch({ store: this.store, index, figureIndex, question, queryVector, k, figureFloor: this.figureFloor });
+    const passages = hybridSearch({ store: this.store, index, figureIndex, question, queryVector, k, figureFloor: this.figureFloor, docIds });
     return { passages, warning, timings: { embedMs: stats.ms || 0, loadMs: stats.loadMs || 0, searchMs: Date.now() - t } };
   }
 

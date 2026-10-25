@@ -116,12 +116,17 @@ export const FIGURE_FLOOR = 0.68;
  * (at most perPassage), then up to maxFigures figures found on their own,
  * marked by figureId (t-d3dd407413). */
 export function hybridSearch({ store, index, figureIndex = null, question, queryVector, k = 8, perDoc = 3, perCanvas = 6, pool = 40,
-  maxFigures = 3, perPassage = 2, figureFloor = FIGURE_FLOOR }) {
-  const vector = index && queryVector ? index.search(queryVector, pool) : [];
+  maxFigures = 3, perPassage = 2, figureFloor = FIGURE_FLOOR, docIds = null }) {
+  /* Only the chosen documents, when a conversation or an agent names some:
+   * each ranking is kept to their chunks and figures, so every slot is
+   * theirs (t-2c61e12cb6). */
+  const chunkIds = docIds ? new Set(docIds.flatMap((id) => store.docChunkIds(id))) : null;
+  const figureIds = docIds ? new Set(docIds.flatMap((id) => store.docFigureIds(id))) : null;
+  const vector = index && queryVector ? index.search(queryVector, pool, chunkIds) : [];
   const match = buildMatch(question);
-  const keyword = match ? store.keywordSearch(match, pool) : [];
+  const keyword = match ? store.keywordSearch(match, pool, docIds) : [];
   const fused = fuse([vector, keyword]);
-  const pictures = figureIndex && queryVector ? figureIndex.search(queryVector, pool) : [];
+  const pictures = figureIndex && queryVector ? figureIndex.search(queryVector, pool, figureIds) : [];
   const rank = new Map(pictures.map((h, i) => [h.id, { rank: i + 1, score: h.score }]));
   const reached = (id) => (rank.get(id)?.score ?? -1) >= figureFloor;
 

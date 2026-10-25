@@ -23,7 +23,7 @@ const S = {
   tab: 'ask', agent: 'claude', model: 'sonnet',
   conv: null, convAgent: null, sources: new Map(), asking: null,
   docs: new Map(), progress: new Map(), events: null, startedAt: 0,
-  libFilter: 'all', notex: null,
+  libFilter: 'all', notex: null, scope: null,
 };
 
 /* ------------------------------------------------------------ the host */
@@ -320,6 +320,7 @@ function renderDocs() {
   document.querySelectorAll('#lib-filter button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.filter === S.libFilter)));
   renderReading();
   renderNotex();
+  renderScope();
 }
 
 async function loadNotex() {
@@ -586,7 +587,7 @@ async function ask(question) {
     $('ask-note').textContent = S.agent === 'agy' ? `Antigravity is working - ${s} s (it usually takes 40-50 s)` : `${s} s`;
   }, 1000);
   try {
-    const body = { question, agent: S.agent, conversationId: S.conv };
+    const body = { question, agent: S.agent, conversationId: S.conv, docs: S.scope };
     if (S.model) body.model = S.model;
     for await (const e of engine.ask(body, ac.signal)) {
       if (e.type === 'sources') {
@@ -600,6 +601,8 @@ async function ask(question) {
         renderAnswer(bubble, e.answer);
         addMeta(bubble, e.cited || [], e.unknown || [], e.warnings);
         if (e.conversationId) { S.conv = e.conversationId; S.convAgent = e.agent; remember('conv', S.conv); }
+        // The engine's word on the choice: documents removed since have dropped out.
+        if (e.scope !== undefined) { S.scope = e.scope; renderScope(); }
         loadConversations();
       } else if (e.type === 'error') {
         throw new EngineRefused(e.status || 500, e.code, e.message);
@@ -614,7 +617,7 @@ async function ask(question) {
     clearInterval(tick);
     S.asking = null;
     $('cancel').hidden = true;
-    $('send').disabled = false;
+    renderScope(); // enables Ask again, unless no document is ticked
     $('ask-note').textContent = '';
     if (S.agent === 'agy') renderPool(S.state && S.state.pool);
   }
@@ -635,8 +638,66 @@ async function loadConversations() {
   } catch (_) { /* shown by the status */ }
 }
 
+/* ---------------------------------------------- which documents to ask */
+
+/* A conversation searches all documents, or the ones ticked here; the
+ * choice goes with every question and is kept with the conversation, and
+ * search itself is limited to them (t-c323b2002a). */
+const readyDocs = () => [...S.docs.values()].filter((d) => d.status === 'ready').sort((a, b) => a.name.localeCompare(b.name));
+
+function renderScope() {
+  const docs = readyDocs();
+  const btn = $('scope-btn');
+  const chosen = S.scope ? docs.filter((d) => S.scope.includes(d.id)) : null;
+  btn.classList.toggle('narrowed', Boolean(chosen));
+  btn.textContent = !chosen ? 'Searching: all documents'
+    : chosen.length === 1 ? `Searching: ${chosen[0].name}` : `Searching: ${chosen.length} of ${docs.length} documents`;
+  btn.title = chosen ? chosen.map((d) => d.name).join('\n') : 'Every document in the library - click to choose';
+  $('send').disabled = Boolean(S.asking) || Boolean(chosen && !chosen.length);
+  const pop = $('scope-pop');
+  if (pop.hidden) return;
+  const box = (d) => {
+    const l = el('label');
+    const c = el('input');
+    c.type = 'checkbox';
+    c.dataset.id = String(d.id);
+    c.checked = !S.scope || S.scope.includes(d.id);
+    l.append(c, el('span', null, d.name));
+    return l;
+  };
+  const all = el('label', 'all');
+  const ca = el('input');
+  ca.type = 'checkbox';
+  ca.dataset.all = '1';
+  ca.checked = !S.scope;
+  all.append(ca, el('span', null, 'All documents - including ones added later'));
+  const mine = docs.filter((d) => d.origin !== 'notex');
+  const canvases = docs.filter((d) => d.origin === 'notex');
+  pop.replaceChildren(all,
+    ...(mine.length ? [el('div', 'group', 'Added by you'), ...mine.map(box)] : []),
+    ...(canvases.length ? [el('div', 'group', 'From File Fabric'), ...canvases.map(box)] : []),
+    ...(!docs.length ? [el('div', 'note', 'No documents are ready yet.')] : []),
+    ...(chosen && !chosen.length ? [el('div', 'note', 'Tick at least one document to ask.')] : []));
+}
+
+function onScopeChange(e) {
+  const c = e.target;
+  if (c.type !== 'checkbox') return;
+  const ids = readyDocs().map((d) => d.id);
+  if (c.dataset.all) S.scope = c.checked ? null : [];
+  else {
+    const now = new Set(S.scope || ids);
+    if (c.checked) now.add(Number(c.dataset.id)); else now.delete(Number(c.dataset.id));
+    // Every document ticked is the same as all of them, which also takes in ones added later.
+    S.scope = ids.every((id) => now.has(id)) ? null : ids.filter((id) => now.has(id));
+  }
+  renderScope();
+}
+
 function newConversation() {
   S.conv = null; S.convAgent = null; S.sources = new Map();
+  S.scope = null;
+  renderScope();
   remember('conv', null);
   $('thread').replaceChildren($('thread-empty'));
   $('thread-empty').hidden = false;
@@ -650,6 +711,8 @@ async function openConversation(id) {
     S.conv = conversation.id;
     S.convAgent = conversation.agent;
     S.sources = new Map(sources.map((s) => [s.n, s]));
+    S.scope = conversation.scope || null;
+    renderScope();
     remember('conv', S.conv);
     $('thread').replaceChildren($('thread-empty'));
     $('thread-empty').hidden = true;
@@ -1239,6 +1302,14 @@ function wire() {
   });
 
   // Ask
+  $('scope-btn').addEventListener('click', () => {
+    const pop = $('scope-pop');
+    pop.hidden = !pop.hidden;
+    $('scope-btn').setAttribute('aria-expanded', String(!pop.hidden));
+    renderScope();
+  });
+  $('scope-pop').addEventListener('change', onScopeChange);
+  document.addEventListener('click', (e) => { if (!e.target.closest('.scope')) $('scope-pop').hidden = true; });
   $('ask-form').addEventListener('submit', (e) => {
     e.preventDefault();
     const q = $('question').value.trim();

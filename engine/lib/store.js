@@ -68,6 +68,11 @@ export class Store {
               join chunks c on c.id = f.rowid join documents d on d.id = c.doc_id
               where chunks_fts match ? and d.status = 'ready'
               order by bm25(chunks_fts) limit ?`),
+      ftsIn: p(`select f.rowid id, bm25(chunks_fts) score from chunks_fts f
+                join chunks c on c.id = f.rowid join documents d on d.id = c.doc_id
+                where chunks_fts match ? and d.status = 'ready' and d.id in (select value from json_each(?))
+                order by bm25(chunks_fts) limit ?`),
+      setScope: p('update conversations set scope = ? where id = ?'),
       stale: p(`select * from documents where status = 'ready' and (embedded_with is null or embedded_with <> ?)`),
       pending: p(`select * from documents where status in ('queued', 'extracting', 'embedding') order by id`),
       totals: p(`select (select count(*) from documents) docs, (select count(*) from chunks) chunks,
@@ -250,9 +255,14 @@ export class Store {
 
   /* bm25() is lower-is-better; the sign is flipped so every score the store
    * returns is higher-is-better. */
-  keywordSearch(match, limit) {
-    return this.q.fts.all(match, limit).map((r) => ({ id: r.id, score: -r.score }));
+  keywordSearch(match, limit, docIds = null) {
+    const rows = docIds ? this.q.ftsIn.all(match, JSON.stringify(docIds), limit) : this.q.fts.all(match, limit);
+    return rows.map((r) => ({ id: r.id, score: -r.score }));
   }
+
+  /* The documents a conversation searches: an array of ids, or null for all
+   * of them (t-c323b2002a). */
+  setScope(conversationId, docIds) { this.q.setScope.run(docIds ? JSON.stringify(docIds) : null, conversationId); }
 
   /* A conversation holds its agent's session and its own numbering of
    * sources, so [3] means the same passage for as long as it runs. A source
@@ -263,7 +273,10 @@ export class Store {
     return Number(this.q.addConversation.run(agent, model ?? null, title, t, t).lastInsertRowid);
   }
 
-  conversation(id) { return this.q.conversation.get(id) || null; }
+  conversation(id) {
+    const c = this.q.conversation.get(id);
+    return c ? { ...c, scope: c.scope ? JSON.parse(c.scope) : null } : null;
+  }
   /* Its messages and sources go with it. */
   deleteConversation(id) { this.q.deleteConversation.run(id); }
   conversations() { return this.q.conversations.all(); }

@@ -111,7 +111,7 @@ function choose(engine, conv, { agent, model }) {
  * the command line, every question starts its own process. onSources fires
  * once the sources are known, before the agent starts - so the plugin can
  * show what is being read during agy's wait. */
-export async function ask(engine, { question, agent = null, model = null, conversationId = null, k = 8,
+export async function ask(engine, { question, agent = null, model = null, conversationId = null, k = 8, docs = undefined,
   onDelta = () => {}, onSources = () => {}, signal, agentOptions = {}, pool = null }) {
   const store = engine.store;
   const conv = conversationId ? store.conversation(conversationId) : null;
@@ -123,7 +123,12 @@ export async function ask(engine, { question, agent = null, model = null, conver
    * (t-3e974fe2a3). */
   const history = conv ? store.messages(conv.id).filter((m) => m.role === 'user') : [];
   const searchFor = history.length ? `${history[history.length - 1].text} ${question}` : question;
-  const { passages, warning: searchWarning, timings: searchTimings = {} } = await engine.search(searchFor, { k });
+  /* The documents this conversation searches: the ones the question names,
+   * else the conversation's own choice, else all (t-c323b2002a). Ids of
+   * documents removed since drop out. */
+  let scope = docs !== undefined ? docs : conv ? conv.scope : null;
+  if (scope) scope = [...new Set(scope.map(Number))].filter((id) => store.doc(id));
+  const { passages, warning: searchWarning, timings: searchTimings = {} } = await engine.search(searchFor, { k, docIds: scope });
 
   const earlier = conv ? store.sources(conv.id) : [];
   const byKey = new Map(earlier.map((s) => [keyOf(s), s]));
@@ -143,12 +148,17 @@ export async function ask(engine, { question, agent = null, model = null, conver
   /* Nothing to answer from: no agent is started, so no subscription is spent
    * (t-786c2f8aad). */
   if (!earlier.length && !fresh.length) {
-    return { conversationId: null, answer: 'Nothing in the indexed documents matches this question.', sources: [], cited: [], unknown: [],
+    if (conv) store.setScope(conv.id, scope);
+    return { conversationId: conv ? conv.id : null, answer: scope ? 'Nothing in the chosen documents matches this question.' : 'Nothing in the indexed documents matches this question.',
+      sources: [], cited: [], unknown: [], scope,
       warnings: [searchWarning].filter(Boolean), agent: who.name, model: who.model, asked: false, timings: { ...searchTimings, agentMs: 0 } };
   }
 
   const images = who.name === 'claude' ? figureImages(engine, fresh) : [];
-  const prompt = buildPrompt({ question, fresh, earlier: earlier.length ? next - 1 - fresh.length : 0, shown: new Set(images.map((im) => im.id)) });
+  let prompt = buildPrompt({ question, fresh, earlier: earlier.length ? next - 1 - fresh.length : 0, shown: new Set(images.map((im) => im.id)) });
+  /* The new sources are already limited; the agent is told so, since its
+   * session may hold earlier sources from documents now left out. */
+  if (scope) prompt = `This question is limited to these documents: ${scope.map((id) => store.doc(id).name).join('; ')}. Answer only from sources in them.\n\n${prompt}`;
   onSources({ sources: shown, fresh: fresh.map((s) => s.n) });
 
   let result;
@@ -176,6 +186,7 @@ export async function ask(engine, { question, agent = null, model = null, conver
 
   const id = conv ? conv.id : store.addConversation({ agent: who.name, model: who.model, title: question.slice(0, 120) });
   store.setSession(id, result.session, who.model);
+  store.setScope(id, scope);
   if (session && !conv) pool.adopt(id, session);
   store.addSources(id, fresh);
   store.addMessage(id, { role: 'user', text: question });
@@ -184,6 +195,7 @@ export async function ask(engine, { question, agent = null, model = null, conver
   return {
     conversationId: id,
     answer: result.text,
+    scope,
     sources: shown,
     cited: cited.map((n) => all.get(n)),
     unknown,

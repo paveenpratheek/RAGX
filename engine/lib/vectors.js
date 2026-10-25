@@ -75,12 +75,15 @@ export class VectorIndex {
   }
 
   /* Top k by dot product. k is small (about 40), so a sorted array of the best
-   * so far beats a heap in both code and time. */
-  search(query, k) {
+   * so far beats a heap in both code and time. allow, a Set of ids, keeps
+   * the scan to those - a conversation's chosen documents - so the top k are
+   * theirs, not what is left of everyone's (t-2c61e12cb6). */
+  search(query, k, allow = null) {
     const q = normalise(query);
     const dim = this.dim;
     const best = [];
     for (let row = 0; row < this.count; row++) {
+      if (allow && !allow.has(this.ids[row])) continue;
       let s = 0;
       const base = row * dim;
       for (let i = 0; i < dim; i++) s += q[i] * this.data[base + i];

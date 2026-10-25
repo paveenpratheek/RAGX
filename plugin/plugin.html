@@ -87,6 +87,10 @@
       <form id="ask-form" class="composer">
         <textarea id="question" rows="2" placeholder="Ask a question…  (Enter to send, Shift+Enter for a new line)"></textarea>
         <div class="row">
+          <div class="menu scope">
+            <button type="button" id="scope-btn" class="scope-btn" aria-haspopup="true" aria-expanded="false"></button>
+            <div id="scope-pop" class="popover scope-pop" hidden></div>
+          </div>
           <span class="note" id="ask-note"></span>
           <span class="grow"></span>
           <button type="button" id="cancel" hidden>Cancel</button>

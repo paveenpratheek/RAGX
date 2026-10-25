@@ -203,11 +203,12 @@ create table if not exists samples_min (
  * reading is what Claude read in it, kept with the conversation. A source's
  * images, as JSON, are the linked images under its heading. A document's
  * origin is 'notex' for a File Fabric canvas NoteX wrote, null for one the
- * user added (t-9406918dd3). */
+ * user added (t-9406918dd3). A conversation's scope, as JSON, is the
+ * document ids it searches, null for all (t-c323b2002a). */
 const COLUMNS = [['calls', 'image_ms', 'integer'], ['sources', 'figure_id', 'integer'], ['sources', 'figures', 'text'],
   ['chunks', 'figure_id', 'integer'], ['chunks', 'origin', 'text'],
   ['figures', 'read', 'integer'], ['calls', 'read_ms', 'integer'], ['calls', 'reads', 'integer'], ['calls', 'read_cached', 'integer'],
-  ['sources', 'reading', 'text'], ['sources', 'images', 'text'], ['documents', 'origin', 'text']];
+  ['sources', 'reading', 'text'], ['sources', 'images', 'text'], ['documents', 'origin', 'text'], ['conversations', 'scope', 'text']];
 
 /* `lead` is how many characters at the start of a chunk repeat the end of the
  * one before it - the overlap. Search joins neighbouring chunks by dropping

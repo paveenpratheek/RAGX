@@ -247,6 +247,14 @@ export async function startServer({
 
   const notexDir = () => notexFolder(dir, engine.store.getMeta('notex_docs', ''));
 
+  /* Which documents a search or question is limited to: a list of document
+   * ids, or null (or left out) for all of them (t-c323b2002a). */
+  const docList = (docs) => {
+    if (docs === null || docs === undefined) return null;
+    if (!Array.isArray(docs) || docs.some((d) => !Number.isInteger(Number(d)))) throw new HttpError(400, 'bad-docs', 'docs is a list of document ids, or null for all.');
+    return docs.map(Number);
+  };
+
   const settings = () => ({
     ...engine.settings(),
     imageFolders: imageFolders(),
@@ -443,13 +451,14 @@ export async function startServer({
     }
 
     if (m('POST', /^\/api\/search$/)) {
-      const { q, k } = await readJson(req);
+      const { q, k, docs } = await readJson(req);
       if (!q) throw new HttpError(400, 'no-question', 'Give the search in q.');
+      const docIds = docList(docs);
       const started = Date.now();
       const who = whoIs(req);
       const run = tracker.begin({ ...who, kind: 'search', question: String(q), phase: 'searching' });
       let r;
-      try { r = await engine.search(String(q), { k: Number(k) || 8 }); } catch (e) {
+      try { r = await engine.search(String(q), { k: Number(k) || 8, docIds }); } catch (e) {
         tracker.record({ ...who, run, kind: 'search', question: String(q), ms: Date.now() - started, error: e.message });
         throw e;
       }
@@ -481,13 +490,15 @@ export async function startServer({
         const name = body.agent || null;
         const r = await ask(engine, {
           question, agent: name, model: body.model || null, conversationId, k: Number(body.k) || 8,
+          // Left out, a conversation keeps its own choice; null searches all documents.
+          docs: body.docs === undefined ? undefined : docList(body.docs),
           signal: ac.signal, pool, agentOptions: (name && agentOptions[name]) || (!name && agentOptions[engine.store.getMeta('agent', 'claude')]) || {},
           // First, before the agent's wait (t-3569a2ad7e).
           onSources: ({ sources, fresh }) => { shown = sources; tracker.phase(run, 'agent answering'); send({ type: 'sources', sources: sources.map((s) => ({ ...s, fresh: fresh.includes(s.n) })) }); },
           onDelta: (text) => send({ type: 'delta', text }),
         });
         send({ type: 'done', conversationId: r.conversationId, answer: r.answer, cited: r.cited.map((s) => s.n), unknown: r.unknown,
-          warnings: r.warnings, agent: r.agent, model: r.model, ms: r.ms ?? null, asked: r.asked });
+          warnings: r.warnings, agent: r.agent, model: r.model, ms: r.ms ?? null, asked: r.asked, scope: r.scope ?? null });
         tracker.record({ ...who, run, kind: 'ask', question, agent: r.agent, model: r.model, ms: Date.now() - started, timings: r.timings,
           results: r.sources.length, detail: { conversationId: r.conversationId, passages: r.sources.map(passageDetail), answer: r.answer,
             cited: r.cited.map((s) => s.n), unknown: r.unknown, warnings: r.warnings } });
