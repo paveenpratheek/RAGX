@@ -108,7 +108,7 @@ test('an index from before gains the reads table and the chunk columns on openin
   assert.ok(cols.includes('figure_id') && cols.includes('origin'));
   store.putReading('abc', 'haiku', { kind: 'chart', text: 'x', description: 'y', ms: 5 });
   assert.deepEqual(store.reading('abc', 'haiku'), { kind: 'chart', text: 'x', description: 'y', parsed: true, ms: 5 });
-  assert.equal(store.getMeta('schema_version'), '5');
+  assert.equal(store.getMeta('schema_version'), '6');
   store.close();
 });
 

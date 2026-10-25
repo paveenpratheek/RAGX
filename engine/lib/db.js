@@ -5,7 +5,7 @@
  */
 import { DatabaseSync } from 'node:sqlite';
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 const SCHEMA = `
 create table if not exists meta (
@@ -14,7 +14,7 @@ create table if not exists meta (
 );
 
 create table if not exists documents (
-  id            integer primary key,
+  id            integer primary key autoincrement,
   sha256        text not null unique,
   name          text not null,
   ext           text not null,
@@ -30,7 +30,7 @@ create table if not exists documents (
 );
 
 create table if not exists chunks (
-  id        integer primary key,
+  id        integer primary key autoincrement,
   doc_id    integer not null references documents(id) on delete cascade,
   ord       integer not null,
   heading   text not null default '',
@@ -52,7 +52,7 @@ create table if not exists vectors (
  * made by the same model as the chunks', so one search reaches both
  * (t-ba2cbf35c7). */
 create table if not exists figures (
-  id      integer primary key,
+  id      integer primary key autoincrement,
   doc_id  integer not null references documents(id) on delete cascade,
   ord     integer not null,
   kind    text not null,
@@ -88,7 +88,7 @@ create table if not exists reads (
  * embedded or copied - only shown on the page, from where it is, when a
  * passage under that heading is cited (t-d112dfa471). */
 create table if not exists linked_images (
-  id      integer primary key,
+  id      integer primary key autoincrement,
   doc_id  integer not null references documents(id) on delete cascade,
   ord     integer not null,
   heading text not null default '',
@@ -232,9 +232,59 @@ export function openDb(file) {
   for (const [table, column, type] of COLUMNS) {
     if (!db.prepare(`pragma table_info(${table})`).all().some((c) => c.name === column)) db.exec(`alter table ${table} add column ${column} ${type}`);
   }
+  neverReuseIds(db);
   db.prepare("insert into meta (key, value) values ('schema_version', ?) on conflict (key) do update set value = excluded.value")
     .run(String(SCHEMA_VERSION));
   return db;
+}
+
+/* Where each never-reused id is still named once its row is gone: a
+ * conversation's sources and scope, and a chunk's figure. */
+const NAMED = {
+  documents: ['select max(id) from documents', 'select max(doc_id) from sources',
+    'select max(cast(j.value as integer)) from conversations c, json_each(c.scope) j where c.scope is not null'],
+  chunks: ['select max(id) from chunks', 'select max(cast(j.value as integer)) from sources s, json_each(s.chunk_ids) j'],
+  figures: ['select max(id) from figures', 'select max(figure_id) from sources', 'select max(figure_id) from chunks',
+    "select max(json_extract(j.value, '$.figureId')) from sources s, json_each(s.figures) j where s.figures is not null"],
+  linked_images: ['select max(id) from linked_images',
+    "select max(json_extract(j.value, '$.linkedId')) from sources s, json_each(s.images) j where s.images is not null"],
+};
+
+/* A document, chunk, figure or linked image never gets an id one had before
+ * (t-02d1257b51): SQLite gives a plain integer key the highest one plus one,
+ * so removing the newest document handed its id, and its chunks', to the
+ * next. An index made before AUTOINCREMENT has these tables copied once into
+ * ones with it, every id kept, and each counter set above the highest id
+ * anything still names - so one freed before the upgrade is not given out
+ * either (t-6cfca3e244). */
+function neverReuseIds(db) {
+  const sqlOf = (t) => db.prepare("select sql from sqlite_master where type = 'table' and name = ?").get(t).sql;
+  const old = Object.keys(NAMED).filter((t) => !/autoincrement/i.test(sqlOf(t)));
+  if (!old.length) return;
+  // Foreign keys are off for the copy, so dropping a table takes nothing with it; this pragma only works outside a transaction.
+  const brokenBefore = db.prepare('pragma foreign_key_check').all().length;
+  db.exec('pragma foreign_keys = off');
+  try {
+    transaction(db, () => {
+      for (const t of old) {
+        const made = sqlOf(t).replace(/^create table\s+(if not exists\s+)?"?\w+"?/i, `create table ${t}_ids`)
+          .replace(/\bid(\s+)integer primary key\b/i, 'id$1integer primary key autoincrement');
+        const cols = db.prepare(`pragma table_info(${t})`).all().map((c) => c.name).join(', ');
+        db.exec(`${made}; insert into ${t}_ids (${cols}) select ${cols} from ${t}; drop table ${t}; alter table ${t}_ids rename to ${t};`);
+      }
+      db.exec(SCHEMA); // the indexes and triggers dropped with their tables
+      for (const t of old) {
+        const top = Math.max(0, ...NAMED[t].map((q) => Number(Object.values(db.prepare(q).get())[0]) || 0));
+        db.prepare('delete from sqlite_sequence where name = ?').run(t);
+        db.prepare('insert into sqlite_sequence (name, seq) values (?, ?)').run(t, top);
+      }
+      // Only what the copy broke; anything broken before is left as it was.
+      const broken = db.prepare('pragma foreign_key_check').all();
+      if (broken.length > brokenBefore) throw new Error(`Upgrading the index left ${broken.length - brokenBefore} broken references, starting in ${broken[0].table}.`);
+    });
+  } finally {
+    db.exec('pragma foreign_keys = on');
+  }
 }
 
 /* node:sqlite has no transaction helper. Every multi-row write goes through
