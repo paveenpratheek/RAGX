@@ -11,17 +11,14 @@
 <body>
 <header class="bar">
   <div class="brand">
-    <span class="dot" id="dot" aria-hidden="true"></span>
+    <svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h11a5 5 0 0 1 0 10H9l-5 4z"/><path d="M8 9h7"/><path d="M8 12h4"/></svg>
     <strong>RAGX</strong>
+    <span class="tag">Ask your files</span>
+  </div>
+  <div class="pill status-pill">
+    <span class="dot" id="dot" aria-hidden="true"></span>
     <span class="status" id="status">Looking for the engine…</span>
   </div>
-  <nav class="tabs" role="tablist">
-    <button role="tab" data-tab="ask">Ask</button>
-    <button role="tab" data-tab="library">Library</button>
-    <button role="tab" data-tab="settings">Settings</button>
-    <button role="tab" data-tab="tracker">Tracker</button>
-    <button role="tab" data-tab="notifications">Notifications <span class="badge" id="note-badge" hidden></span></button>
-  </nav>
   <div class="agent">
     <div class="seg" id="agent-seg" role="radiogroup" aria-label="Agent">
       <button role="radio" data-agent="claude">Claude</button>
@@ -38,6 +35,24 @@
     </div>
   </div>
 </header>
+
+<div class="shell">
+<nav class="side" aria-label="RAGX">
+  <div class="tabs" role="tablist" aria-orientation="vertical">
+    <button role="tab" data-tab="ask"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h11a5 5 0 0 1 0 10H9l-5 4z"/></svg>Ask</button>
+    <button role="tab" data-tab="library"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h4v16H5z"/><path d="M11 4h4v16h-4z"/><path d="m17 5 3.5 1-3.5 14"/></svg>Library</button>
+    <button role="tab" data-tab="tracker"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Tracker</button>
+    <button role="tab" data-tab="notifications"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>Notifications <span class="badge" id="note-badge" hidden></span></button>
+    <button role="tab" data-tab="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>Settings</button>
+  </div>
+  <section class="convs" aria-label="Conversations">
+    <div class="convs-head">
+      <span class="eyebrow">Conversations</span>
+      <button id="new-conv" class="icon-btn" title="New conversation" aria-label="New conversation"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+    </div>
+    <ul id="conv-list" class="list"></ul>
+  </section>
+</nav>
 
 <main>
   <section id="offline" class="center" hidden>
@@ -73,17 +88,15 @@
   </section>
 
   <section class="panel ask" data-panel="ask" hidden>
-    <aside class="convs">
-      <button id="new-conv" class="wide">New conversation</button>
-      <ul id="conv-list" class="list"></ul>
-    </aside>
     <div class="chat">
+      <div class="panel-head"><span class="eyebrow">Ask</span><span class="note" id="chat-note">Answers come only from your library, every statement cited.</span></div>
       <div id="thread" class="thread" aria-live="polite">
         <div class="empty" id="thread-empty">
           <h2>Ask your documents</h2>
           <p>Answers come only from the files in your library, each statement cited. Click a citation to read the passage.</p>
         </div>
       </div>
+    </div>
       <form id="ask-form" class="composer">
         <textarea id="question" rows="2" placeholder="Ask a question…  (Enter to send, Shift+Enter for a new line)"></textarea>
         <div class="row">
@@ -97,7 +110,6 @@
           <button type="submit" id="send" class="primary">Ask</button>
         </div>
       </form>
-    </div>
     <aside id="source" class="source" hidden>
       <header>
         <div><strong id="source-title"></strong><div class="note" id="source-where"></div></div>
@@ -237,6 +249,7 @@
     <p class="note" id="note-empty">No requests.</p>
   </section>
 </main>
+</div>
 
 <div id="lightbox" class="lightbox" role="dialog" aria-modal="true" aria-label="Figure" hidden>
   <figure>

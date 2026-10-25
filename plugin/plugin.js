@@ -12,6 +12,7 @@
  */
 import { Engine, EngineDown, EngineRefused } from './api.js';
 import { parse, toDom } from './md.js';
+import { followWallpaper } from './wallpaper.js';
 
 const TM = window.TerManager;
 const engine = new Engine('.');
@@ -1206,6 +1207,8 @@ function renderNotes() {
 function showTab(tab) {
   S.tab = tab;
   remember('tab', tab);
+  // The left sheet shows the conversations only on Ask (plugin.css reads this).
+  document.body.dataset.tab = tab;
   document.querySelectorAll('.tabs button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
   if (!S.up) { if (S.checked) showOffline(); return; }
   document.querySelectorAll('[data-panel]').forEach((p) => { p.hidden = p.dataset.panel !== tab; });
@@ -1381,6 +1384,7 @@ function wire() {
 }
 
 async function boot() {
+  followWallpaper();
   wire();
   if (TM) await TM.ready;
   S.tab = await recall('tab', 'ask');
