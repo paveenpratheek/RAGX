@@ -213,8 +213,9 @@ function onEvent(e) {
       S.progress.delete(e.doc.id);
       S.docs.set(e.doc.id, e.doc);
       renderDocs();
-      toast(e.status === 'exists' ? `${e.doc.name} is already in the library.`
-        : `${e.doc.name} is ready - ${e.doc.chunks} passages${e.doc.figures ? `, ${e.doc.figures} figure${e.doc.figures === 1 ? '' : 's'}` : ''}.`);
+      toast(e.status === 'exists' ? `${e.doc.name} is already in the library${e.replaced && e.replaced.length ? ' - the other versions are removed' : ''}.`
+        : `${e.doc.name} is ready - ${e.doc.chunks} passages${e.doc.figures ? `, ${e.doc.figures} figure${e.doc.figures === 1 ? '' : 's'}` : ''}`
+          + (e.replaced && e.replaced.length ? `; its old version is replaced${e.reused ? `, ${e.reused} unchanged passages kept as they were` : ''}.` : '.'));
       if (e.status === 'reembedded') refresh(); // the stale count has changed
       setStatus('up', `Engine running · ${S.docs.size} documents`);
       loadNotexSoon(); // it may be a canvas from NoteX, now marked
@@ -387,11 +388,29 @@ function renderDoc(id) {
   if (row) row.replaceWith(docRow(d)); else renderDocs();
 }
 
+/* A file named like a document in the library is offered as its new
+ * version, never swapped in unasked (t-b2385584f0): 'replace', 'keep' or
+ * 'cancel'. */
+function chooseReplace(name) {
+  const same = [...S.docs.values()].filter((d) => d.name === name);
+  if (!same.length) return Promise.resolve('keep');
+  const d = $('choice');
+  $('choice-title').textContent = `${name} is already in the library`;
+  $('choice-text').textContent = `Replace it with this file? The old version keeps answering until the new one is ready, then it is removed, and conversations kept to it move to the new one. Places with unchanged text are not embedded again.${same.length > 1 ? ` All ${same.length} documents with this name are replaced.` : ''}`;
+  d.returnValue = '';
+  return new Promise((resolve) => {
+    d.addEventListener('close', () => resolve(d.returnValue || 'cancel'), { once: true });
+    d.showModal();
+  });
+}
+
 async function uploadFiles(files) {
   for (const f of files) {
+    const how = await chooseReplace(f.name);
+    if (how === 'cancel') continue;
     try {
-      await engine.upload(f);
-      toast(`${f.name} is queued.`);
+      await engine.upload(f, { replace: how === 'replace' });
+      toast(how === 'replace' ? `${f.name} is queued to replace its old version.` : `${f.name} is queued.`);
     } catch (e) { toast(`${f.name}: ${e.message}`, true); }
   }
 }
@@ -1275,7 +1294,13 @@ function wire() {
     e.preventDefault();
     const p = $('path').value.trim().replace(/^"(.*)"$/, '$1');
     if (!p) return;
-    try { await engine.json('POST', '/api/docs/path', { body: { path: p } }); $('path').value = ''; toast('Queued.'); } catch (err) { toast(err.message, true); }
+    const how = await chooseReplace(p.split(/[\\/]/).pop());
+    if (how === 'cancel') return;
+    try {
+      await engine.json('POST', '/api/docs/path', { body: { path: p, replace: how === 'replace' } });
+      $('path').value = '';
+      toast(how === 'replace' ? 'Queued to replace its old version.' : 'Queued.');
+    } catch (err) { toast(err.message, true); }
   });
   $('lib-filter').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-filter]');

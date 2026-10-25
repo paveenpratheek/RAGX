@@ -31,6 +31,7 @@ const USAGE = `usage: node engine/cli.js --data-dir <folder> <command>
        node engine/cli.js plugin-setup     (once: tells the plugin where the engine is)
 
   ingest <file>...        add documents (one already indexed is skipped)
+                          [--replace]  as the new version of the documents with its name
   resume                  finish documents an interrupted run left half-done
   search <question>       best passages for a question  [--k 8] [--json]
   ask <question>          a cited answer from Claude or agy
@@ -56,7 +57,7 @@ function parse(argv) {
     const a = argv[i];
     if (a.startsWith('--')) {
       const key = a.slice(2);
-      if (key === 'json' || key === 'help') opts[key] = true;
+      if (key === 'json' || key === 'help' || key === 'replace') opts[key] = true;
       else if (i + 1 < argv.length) opts[key] = argv[++i];
       else throw new UsageError(`${a} needs a value.`);
     } else args.push(a);
@@ -140,7 +141,9 @@ async function main(argv) {
         const on = progress();
         let failed = 0;
         for (const file of rest) {
-          const r = await engine.ingest(file, { onProgress: on });
+          const r = opts.replace
+            ? await engine.ingestReplacing(file, { onProgress: on, onRemoved: (old) => console.log(`  replaces ${old.name} (id ${old.id}), now removed`) })
+            : await engine.ingest(file, { onProgress: on });
           report(r);
           if (r.status === 'error') failed++;
         }

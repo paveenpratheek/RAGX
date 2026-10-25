@@ -251,6 +251,18 @@
 </main>
 </div>
 
+<!-- A file named like one in the library: replace it, or keep both (t-b2385584f0). Esc adds nothing. -->
+<dialog id="choice" class="choice" aria-labelledby="choice-title">
+  <form method="dialog">
+    <p id="choice-title" class="choice-title"></p>
+    <p id="choice-text" class="note"></p>
+    <div class="choice-actions">
+      <button value="cancel">Don't add</button><span class="grow"></span>
+      <button value="keep">Keep both</button><button value="replace" class="primary" autofocus>Replace</button>
+    </div>
+  </form>
+</dialog>
+
 <div id="lightbox" class="lightbox" role="dialog" aria-modal="true" aria-label="Figure" hidden>
   <figure>
     <img id="lightbox-img" alt="">

@@ -176,7 +176,7 @@ export async function startServer({
       if (ollamaStart) await ollamaStart; // the first job after a start waits for Ollama
       const results = [].concat(await current.run());
       for (const [i, r] of results.entries()) {
-        emit(r.status === 'error' ? { type: 'ingest-error', name: r.doc ? r.doc.name : r.name, error: r.error } : { type: 'doc', status: r.status, doc: r.doc });
+        emit(r.status === 'error' ? { type: 'ingest-error', name: r.doc ? r.doc.name : r.name, error: r.error } : { type: 'doc', status: r.status, doc: r.doc, replaced: r.replaced || [], reused: r.reused ?? null });
         const t = r.timings || {};
         tracker.record({
           run: i === 0 ? current.live : null, ms: t.ms ?? null, source: current.who.source, client: current.who.client, kind: current.who.kind,
@@ -199,6 +199,10 @@ export async function startServer({
     }
   };
   // Announced on joining, so a job waiting behind another shows (t-770d2af24b).
+  // A file added as the new version of the documents with its name; the page hears of each one it replaced.
+  const replacing = (file, opts = {}) => engine.ingestReplacing(file, {
+    ...opts, onProgress, onRemoved: (old, doc) => emit({ type: 'removed', docId: old.id, name: old.name, replacedBy: doc.id }),
+  });
   const enqueue = (label, run, cleanup, who = { source: 'engine', client: null, kind: 'ingest' }) => {
     queue.push({ label, run, cleanup, who });
     emit({ type: 'queue', queue: queue.map((j) => j.label), current: current ? current.label : null });
@@ -325,14 +329,19 @@ export async function startServer({
       return json(200, { samples: tracker.samples(range), now: tracker.last });
     }
 
+    /* X-Replace: 1 (an upload) or replace: true (a path) adds the file as the
+     * new version of the documents with its name - asked of the user by the
+     * page first (t-b2385584f0). */
     if (m('POST', /^\/api\/docs$/)) {
       const name = decodeURIComponent(String(req.headers['x-file-name'] || '')).trim();
+      const replace = req.headers['x-replace'] === '1';
       if (!name || /[\\/]/.test(name)) throw new HttpError(400, 'bad-name', 'Send the file name in X-File-Name, without a folder.');
       fs.mkdirSync(path.join(dir, 'incoming'), { recursive: true });
       const tmp = path.join(dir, 'incoming', crypto.randomBytes(8).toString('hex') + path.extname(name).toLowerCase());
       const bytes = await saveUpload(req, tmp);
-      const position = enqueue(name, () => engine.ingest(tmp, { name, sourcePath: null, onProgress }), () => fs.rmSync(tmp, { force: true }), { ...whoIs(req), kind: 'ingest' });
-      return json(202, { queued: name, bytes, position });
+      const position = enqueue(name, () => (replace ? replacing(tmp, { name, sourcePath: null }) : engine.ingest(tmp, { name, sourcePath: null, onProgress })),
+        () => fs.rmSync(tmp, { force: true }), { ...whoIs(req), kind: 'ingest' });
+      return json(202, { queued: name, bytes, position, replace });
     }
 
     /* NoteX's documents: each File Fabric canvas NoteX wrote, and where it
@@ -349,34 +358,18 @@ export async function startServer({
         const file = notexFile(st.folder, String(name));
         if (!entry || !file) throw new HttpError(404, 'not-found', `No ${name} in ${st.folder}.`);
         if (entry.status === 'added') continue;
-        /* Which versions it replaces is settled when the job runs, not when it
-         * is asked: auto-sync can queue a canvas again while its last version
-         * is still embedding, and every older version must go (t-e278abc970). */
-        enqueue(name, async () => {
-          const older = () => engine.store.docs().filter((d) => d.origin === 'notex' && d.name === name);
-          const ready = older().filter((d) => d.status === 'ready');
-          const reuseFrom = ready.length ? ready[ready.length - 1].id : null;
-          const r = await engine.ingest(file, { onProgress, origin: 'notex', reuseFrom });
-          if (r.status === 'error' || !r.doc) return r;
-          for (const d of older()) {
-            if (d.id === r.doc.id) continue;
-            engine.store.carryScope(d.id, r.doc.id);
-            engine.remove(d.id);
-            emit({ type: 'removed', docId: d.id, name, replacedBy: r.doc.id });
-          }
-          return r;
-        }, null, { ...whoIs(req), kind: 'ingest' });
+        enqueue(name, () => replacing(file, { origin: 'notex' }), null, { ...whoIs(req), kind: 'ingest' });
         queued.push(name);
       }
       return json(202, { queued });
     }
 
     if (m('POST', /^\/api\/docs\/path$/)) {
-      const { path: file } = await readJson(req);
+      const { path: file, replace = false } = await readJson(req);
       if (!file || !path.isAbsolute(String(file))) throw new HttpError(400, 'bad-path', 'Give the full path of a file on this machine.');
       if (!fs.existsSync(file) || !fs.statSync(file).isFile()) throw new HttpError(404, 'not-found', `No file at ${file}.`);
-      const position = enqueue(path.basename(file), () => engine.ingest(String(file), { onProgress }), null, { ...whoIs(req), kind: 'ingest' });
-      return json(202, { queued: path.basename(file), position });
+      const position = enqueue(path.basename(file), () => (replace === true ? replacing(String(file)) : engine.ingest(String(file), { onProgress })), null, { ...whoIs(req), kind: 'ingest' });
+      return json(202, { queued: path.basename(file), position, replace: replace === true });
     }
 
     if ((p = m('DELETE', /^\/api\/docs\/(\d+)$/))) {
@@ -631,7 +624,7 @@ export async function startServer({
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
         'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
-        'access-control-allow-headers': 'X-Rag-Token, Content-Type, X-File-Name, X-Rag-Client',
+        'access-control-allow-headers': 'X-Rag-Token, Content-Type, X-File-Name, X-Rag-Client, X-Replace',
         'access-control-max-age': '600',
       });
       return res.end();

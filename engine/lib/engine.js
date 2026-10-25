@@ -177,6 +177,30 @@ export class Engine {
     return map.size ? map : null;
   }
 
+  /* Adds a file as the new version of every document with exactly its
+   * name, however it came in (t-7e7fbdf2f2): the newest ready one gives its
+   * vectors, and once the new one is in the others are removed, each
+   * conversation kept to one of them kept to it instead (t-701188a6d1).
+   * Which versions go is settled now, as the job runs, so one queued behind
+   * another still embedding leaves no middle version (t-e278abc970).
+   * onRemoved(old, doc) is told of each one removed and what replaced it. */
+  async ingestReplacing(filePath, { name = null, onRemoved = () => {}, ...opts } = {}) {
+    const shown = name || path.basename(path.resolve(filePath));
+    const older = () => this.store.docs().filter((d) => d.name === shown);
+    const ready = older().filter((d) => d.status === STATUS.ready);
+    const r = await this.ingest(filePath, { ...opts, name, reuseFrom: ready.length ? ready[ready.length - 1].id : null });
+    if (r.status === 'error' || !r.doc) return r;
+    const replaced = [];
+    for (const d of older()) {
+      if (d.id === r.doc.id) continue;
+      this.store.carryScope(d.id, r.doc.id);
+      this.remove(d.id);
+      replaced.push(d.id);
+      onRemoved(d, r.doc);
+    }
+    return { ...r, replaced };
+  }
+
   async resume({ onProgress = () => {} } = {}) {
     const out = [];
     for (const doc of this.store.pendingDocs()) out.push(await this.process(doc.id, { onProgress, label: 'resumed' }));

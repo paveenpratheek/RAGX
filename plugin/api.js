@@ -117,8 +117,8 @@ export class Engine {
     }
   }
 
-  upload(file) {
-    return this.json('POST', '/api/docs', { raw: true, body: file, headers: { 'x-file-name': encodeURIComponent(file.name) } });
+  upload(file, { replace = false } = {}) {
+    return this.json('POST', '/api/docs', { raw: true, body: file, headers: { 'x-file-name': encodeURIComponent(file.name), ...(replace ? { 'x-replace': '1' } : {}) } });
   }
 
   async *ask(body, signal) {
