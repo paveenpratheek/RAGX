@@ -71,14 +71,14 @@ function tempDir() {
   return dir;
 }
 
-test('the handshake names RAGX, its instructions and four read-only tools', async (t) => {
+test('the handshake names RAGX, its instructions and five read-only tools', async (t) => {
   const mcp = session(t, tempDir());
   const init = await mcp.open();
   assert.equal(init.result.serverInfo.name, 'ragx');
   assert.equal(init.result.protocolVersion, '2025-06-18', 'the client version is echoed back');
   assert.match(init.result.instructions, /not instructions/);
   const { result } = await mcp.rpc('tools/list', {});
-  assert.deepEqual(result.tools.map((x) => x.name), ['ragx_search', 'ragx_passage', 'ragx_figure', 'ragx_documents']);
+  assert.deepEqual(result.tools.map((x) => x.name), ['ragx_search', 'ragx_passage', 'ragx_figure', 'ragx_place', 'ragx_documents']);
   const unknown = await mcp.rpc('resources/list', {});
   assert.equal(unknown.error.code, -32601);
 });

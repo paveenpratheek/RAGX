@@ -854,7 +854,7 @@ async function saveSettings(ev) {
 
 const RANGES = { hour: 3600e3, day: 86400e3, week: 7 * 86400e3, month: 30 * 86400e3 };
 const WHO = { you: 'You', agent: 'Agent', cli: 'Command line', other: 'Other' };
-const KIND = { search: 'Search', ask: 'Ask', passage: 'Passage', figure: 'Figure', documents: 'Documents', ingest: 'Ingest', reindex: 'Re-index', reembed: 'Re-embed', resume: 'Resume', read: 'Read figures' };
+const KIND = { search: 'Search', ask: 'Ask', passage: 'Passage', figure: 'Figure', documents: 'Documents', ingest: 'Ingest', reindex: 'Re-index', reembed: 'Re-embed', resume: 'Resume', read: 'Read figures', place: 'Place' };
 
 function fmtMs(ms) {
   if (ms == null) return '-';

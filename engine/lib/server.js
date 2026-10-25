@@ -38,6 +38,7 @@ import { OllamaControl } from './ollama.js';
 import { Tracker, modelReader } from './tracker.js';
 import { IMAGE_TYPES } from './extract/index.js';
 import { notexFolder, notexFile, notexStatus } from './notex.js';
+import { place as placeCard, PlaceError } from './place.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const VERSION = JSON.parse(fs.readFileSync(path.join(HERE, '..', '..', 'package.json'), 'utf8')).version;
@@ -58,6 +59,7 @@ function statusOf(e) {
   if (e instanceof HttpError) return e.status;
   const code = e && e.code;
   if (code === 'not-found') return 404;
+  if (e instanceof PlaceError) return e.code === 'many-places' ? 409 : 404;
   if (code === 'bad-image') return 400;
   if (code === 'busy' || code === 'wrong-agent' || code === 'needs-reembed' || code === 'pool-full') return 409;
   if (e instanceof EmbedError || e instanceof AgentError) return 503;
@@ -348,6 +350,16 @@ export async function startServer({
      * stands in the library (t-c30c32cbe2). Adding one marks it as NoteX's;
      * a changed one replaces its old version once ready (t-086ad99f31). */
     if (m('GET', /^\/api\/notex$/)) return json(200, notexStatus(engine.store, notexDir()));
+
+    /* A place on a File Fabric canvas in the library: its card, or with read
+     * its section, for an agent moving around the canvas (t-3174acf082). */
+    if (m('POST', /^\/api\/place$/)) {
+      const { canvas, at = '', read = false } = await readJson(req);
+      const started = Date.now();
+      const r = placeCard({ docs: engine.store.docs(), name: String(canvas || ''), at: String(at || ''), read: read === true, folder: notexDir(), fileOf: (d) => engine.fileOf(d) });
+      tracker.record({ ...whoIs(req), kind: 'place', question: `${r.doc.name} > ${r.place.address || '(the canvas)'}${read === true ? ' (read)' : ''}`, ms: Date.now() - started, results: 1 });
+      return json(200, { canvas: r.doc.name, docId: r.doc.id, address: r.place.address, kind: r.place.kind, text: r.text });
+    }
     if (m('POST', /^\/api\/notex\/add$/)) {
       const { names } = await readJson(req);
       const st = notexStatus(engine.store, notexDir());
