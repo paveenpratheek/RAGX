@@ -52,7 +52,7 @@ test('NoteX canvases are listed, added as NoteX\'s, and replaced when they chang
   let list = (await call('/api/notex')).body;
   assert.deepEqual(list.files.map((f) => [f.name, f.fabric, f.status]), [['testing2.notex.md', 'testing2', 'new']]);
   assert.equal((await call('/api/notex/add', { method: 'POST', body: { names: ['..\\lease.md'] } })).status, 404);
-  assert.deepEqual((await call('/api/notex/add', { method: 'POST', body: {} })).body, { queued: ['testing2.notex.md'] });
+  assert.deepEqual((await call('/api/notex/add', { method: 'POST', body: {} })).body, { queued: ['testing2.notex.md'], files: [] });
 
   const ready = (name) => until(async () => (await call('/api/docs')).body.docs.find((d) => d.name === name && d.status === 'ready'), name);
   const first = await ready('testing2.notex.md');
@@ -61,7 +61,7 @@ test('NoteX canvases are listed, added as NoteX\'s, and replaced when they chang
   assert.equal(lease.origin, null);
   list = (await call('/api/notex')).body;
   assert.deepEqual(list.files.map((f) => [f.status, f.docId]), [['added', first.id]]);
-  assert.deepEqual((await call('/api/notex/add', { method: 'POST', body: {} })).body, { queued: [] });
+  assert.deepEqual((await call('/api/notex/add', { method: 'POST', body: {} })).body, { queued: [], files: [] });
 
   // The fabric changed in File Fabric and NoteX wrote it again: Update replaces it.
   fs.writeFileSync(path.join(docsDir, 'testing2.notex.md'), canvas(4));

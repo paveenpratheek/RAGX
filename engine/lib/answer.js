@@ -28,8 +28,16 @@ export const RULES = [
 
 const pages = (s) => (s.pageFrom == null ? '' : s.pageFrom === s.pageTo ? `, p.${s.pageFrom}` : `, pp.${s.pageFrom}-${s.pageTo}`);
 
+/* Where a document sits on File Fabric canvases, in words: "on Research at
+ * GitX (totem) > Papers" (t-fff1f21827). */
+export function onCanvas(places = []) {
+  if (!places || !places.length) return '';
+  return `on ${places.map((p) => (p.address ? `${p.canvas} at ${p.address}` : p.canvas)).join('; ')}`;
+}
+
 export function label(s) {
-  return `[${s.n}] ${s.docName}${pages(s)}${s.heading ? ' - ' + s.heading : ''}`;
+  const where = onCanvas(s.places);
+  return `[${s.n}] ${s.docName}${pages(s)}${s.heading ? ' - ' + s.heading : ''}${where ? ` (${where})` : ''}`;
 }
 
 const clip = (text, max) => (text.length > max ? `${text.slice(0, max).trimEnd()} ...` : text);
@@ -184,7 +192,7 @@ export async function ask(engine, { question, agent = null, model = null, conver
     if (known) { shown.push(known); continue; }
     const s = { n: next++, chunkIds: p.chunkIds, docId: p.docId, docName: p.docName, heading: p.heading,
       pageFrom: p.pageFrom, pageTo: p.pageTo, text: p.text, figureId: p.figureId ?? null, figures: p.figures || [], reading: p.reading || null,
-      images: p.images || [] };
+      images: p.images || [], places: p.places || [] };
     fresh.push(s);
     shown.push(s);
   }

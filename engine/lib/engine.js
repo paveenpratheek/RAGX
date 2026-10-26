@@ -202,6 +202,52 @@ export class Engine {
     return { ...r, replaced };
   }
 
+  /* A canvas's files as NoteX lists them, each with the place it sits at
+   * (t-fff1f21827). files: { name, sha256, address, path }, already checked
+   * by the caller. A file is matched by canvas, address and name together,
+   * never by name alone (t-2d4339a7ad): bytes the library has gain a place,
+   * new ones are added; a place no longer listed is dropped, and a document
+   * goes only when it came from canvases and no place is left - one the
+   * user added stays. A file replaced in its place carries the
+   * conversations kept to the old one over to it. */
+  async syncCanvasFiles(canvas, files, { onProgress = () => {}, onRemoved = () => {} } = {}) {
+    const key = (x) => `${x.address || ''}\0${x.name}`;
+    const before = new Map(this.store.canvasPlaces(canvas).map((p) => [key(p), p]));
+    const out = { added: [], placed: [], unplaced: [], removed: [], errors: [], results: [] };
+    const listed = new Set();
+    const left = new Map(); // doc id -> the document that took its place, or null
+    for (const f of files) {
+      listed.add(key(f));
+      const had = before.get(key(f));
+      let doc = this.store.docBySha(f.sha256);
+      if (doc && had && had.docId === doc.id) continue;
+      if (!doc || doc.status !== STATUS.ready) {
+        const r = await this.ingest(f.path, { name: f.name, origin: 'notex', onProgress });
+        if (r.status === 'error' || !r.doc) { out.errors.push({ name: f.name, address: f.address, error: r.error || 'not added' }); continue; }
+        doc = r.doc;
+        out.results.push(r);
+        out.added.push({ name: f.name, address: f.address, docId: doc.id });
+      } else out.placed.push({ name: f.name, address: f.address, docId: doc.id });
+      this.store.setPlace(doc.id, { canvas, address: f.address, name: f.name });
+      if (had && had.docId !== doc.id) left.set(had.docId, doc.id);
+    }
+    for (const [k, p] of before) {
+      if (listed.has(k)) continue;
+      this.store.dropPlace(p);
+      out.unplaced.push({ name: p.name, address: p.address, docId: p.docId });
+      if (!left.has(p.docId)) left.set(p.docId, null);
+    }
+    for (const [id, by] of left) {
+      const d = this.store.doc(id);
+      if (!d || d.origin !== 'notex' || d.name.toLowerCase().endsWith('.notex.md') || this.store.placeCount(id) > 0) continue;
+      if (by) this.store.carryScope(id, by);
+      this.remove(id);
+      out.removed.push({ name: d.name, docId: id, replacedBy: by });
+      onRemoved(d, by ? this.store.doc(by) : null);
+    }
+    return out;
+  }
+
   async resume({ onProgress = () => {} } = {}) {
     const out = [];
     for (const doc of this.store.pendingDocs()) out.push(await this.process(doc.id, { onProgress, label: 'resumed' }));
@@ -575,7 +621,8 @@ export class Engine {
     return doc;
   }
 
-  list() { return this.store.docs(); }
+  // Each with the canvas places it sits at, for the Library (t-fff1f21827).
+  list() { return this.store.docs().map((d) => ({ ...d, places: this.store.placesOf(d.id) })); }
 
   stats() {
     const db = path.join(this.dir, 'rag.db');

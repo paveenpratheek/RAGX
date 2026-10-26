@@ -285,7 +285,15 @@ function docRow(d) {
   const name = el('td', 'name', d.name);
   if (d.source_path) name.title = d.source_path;
   // Taken from NoteX: a File Fabric canvas, not a file the user added (t-c30c32cbe2).
-  if (d.origin === 'notex') { const b = el('span', 'origin', 'NoteX'); b.title = 'A File Fabric canvas, written by NoteX'; name.appendChild(b); }
+  const canvasDoc = /\.notex\.md$/i.test(d.name);
+  if (d.origin === 'notex' && canvasDoc) { const b = el('span', 'origin', 'NoteX'); b.title = 'A File Fabric canvas, written by NoteX'; name.appendChild(b); }
+  // A file placed on a canvas: where it sits, every place in the tooltip (t-fff1f21827).
+  const places = d.places || [];
+  if (places.length) {
+    const b = el('span', 'origin place', `On ${places[0].canvas}${places.length > 1 ? ` +${places.length - 1}` : ''}`);
+    b.title = places.map((p) => (p.address ? `${p.canvas} at ${p.address}` : p.canvas)).join('\n');
+    name.appendChild(b);
+  }
   // Kept in RAGX by NoteX's auto-sync: updated by itself after each save in File Fabric (t-9ba4e48993).
   const kept = keptOf(d.name);
   if (d.origin === 'notex' && kept) name.appendChild(keptBadge(kept));
@@ -467,8 +475,10 @@ async function warm() {
 
 function sourceLabel(s) {
   const pages = s.pageFrom == null ? '' : s.pageFrom === s.pageTo ? `, p.${s.pageFrom}` : `, pp.${s.pageFrom}-${s.pageTo}`;
-  if (s.figureId) return `[${s.n}] ${s.docName}${pages} - figure`;
-  return `[${s.n}] ${s.docName}${pages}${s.heading ? ' - ' + s.heading : ''}${s.figures && s.figures.length ? ' + figure' : ''}`;
+  // A file from a canvas says where it sits there (t-fff1f21827).
+  const on = s.places && s.places.length ? ` · on ${s.places[0].canvas}${s.places[0].address ? ` at ${s.places[0].address}` : ''}` : '';
+  if (s.figureId) return `[${s.n}] ${s.docName}${pages} - figure${on}`;
+  return `[${s.n}] ${s.docName}${pages}${s.heading ? ' - ' + s.heading : ''}${s.figures && s.figures.length ? ' + figure' : ''}${on}`;
 }
 
 /* A figure in a panel: its image, fetched with the token, and its caption.

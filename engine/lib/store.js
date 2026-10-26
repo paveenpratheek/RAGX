@@ -25,6 +25,12 @@ export class Store {
       getMeta: p('select value from meta where key = ?'),
       setMeta: p('insert into meta (key, value) values (?, ?) on conflict (key) do update set value = excluded.value'),
       docBySha: p('select * from documents where sha256 = ?'),
+      placesOf: p('select canvas, address, name from doc_places where doc_id = ? order by canvas, address, name'),
+      canvasPlaces: p('select doc_id docId, canvas, address, name from doc_places where canvas = ?'),
+      placesAt: p('select d.id, d.name, d.status from doc_places p join documents d on d.id = p.doc_id where p.canvas = ? and p.address = ? order by p.name'),
+      setPlace: p('insert into doc_places (doc_id, canvas, address, name) values (?, ?, ?, ?) on conflict (canvas, address, name) do update set doc_id = excluded.doc_id'),
+      dropPlace: p('delete from doc_places where canvas = ? and address = ? and name = ?'),
+      placeCount: p('select count(*) n from doc_places where doc_id = ?'),
       doc: p(`select d.*, (select count(*) from figures f where f.doc_id = d.id) figures,
                 (select count(*) from figures f where f.doc_id = d.id and f.read = 1) figures_read from documents d where d.id = ?`),
       maxOrd: p('select coalesce(max(ord), -1) m from chunks where doc_id = ?'),
@@ -120,6 +126,14 @@ export class Store {
   setMeta(key, value) { this.q.setMeta.run(key, String(value)); }
 
   docBySha(sha) { return this.q.docBySha.get(sha) || null; }
+
+  /* The canvases and addresses a document sits at (t-fff1f21827). */
+  placesOf(docId) { return this.q.placesOf.all(docId).map((r) => ({ ...r })); }
+  canvasPlaces(canvas) { return this.q.canvasPlaces.all(canvas).map((r) => ({ ...r })); }
+  placesAt(canvas, address) { return this.q.placesAt.all(canvas, address || '').map((r) => ({ ...r })); }
+  setPlace(docId, { canvas, address = '', name }) { this.q.setPlace.run(docId, canvas, address, name); }
+  dropPlace({ canvas, address = '', name }) { this.q.dropPlace.run(canvas, address, name); }
+  placeCount(docId) { return this.q.placeCount.get(docId).n; }
   doc(id) { return this.q.doc.get(id) || null; }
   docs() { return this.q.docs.all(); }
 

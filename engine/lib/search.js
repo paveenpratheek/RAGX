@@ -190,7 +190,14 @@ export function hybridSearch({ store, index, figureIndex = null, question, query
     const f = store.figure(h.id);
     if (f) alone.push(figureResult(store, f, { score: h.score, ranks: { figure: rank.get(h.id).rank }, chunkIds: [] }));
   }
-  return [...[...own, ...asFigure.values()].sort((a, b) => b.score - a.score), ...alone];
+  const out = [...[...own, ...asFigure.values()].sort((a, b) => b.score - a.score), ...alone];
+  // Where each result's document sits on File Fabric canvases (t-fff1f21827).
+  const placed = new Map();
+  for (const p of out) {
+    if (!placed.has(p.docId)) placed.set(p.docId, store.placesOf(p.docId));
+    if (placed.get(p.docId).length) p.places = placed.get(p.docId);
+  }
+  return out;
 }
 
 /* A figure as a result of its own: its caption as its text, and what Claude

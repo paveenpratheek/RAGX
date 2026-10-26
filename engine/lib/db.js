@@ -5,7 +5,7 @@
  */
 import { DatabaseSync } from 'node:sqlite';
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 const SCHEMA = `
 create table if not exists meta (
@@ -97,6 +97,18 @@ create table if not exists linked_images (
   unique (doc_id, ord)
 );
 create index if not exists linked_images_at on linked_images (doc_id, heading);
+
+/* Where a document sits on File Fabric canvases: one row per canvas,
+ * address and file name holding it. A file on two canvases is one document
+ * with two places (t-fff1f21827); a document with none was never on one. */
+create table if not exists doc_places (
+  doc_id  integer not null references documents(id) on delete cascade,
+  canvas  text not null,
+  address text not null default '',
+  name    text not null,
+  primary key (canvas, address, name)
+);
+create index if not exists doc_places_doc on doc_places (doc_id);
 
 create table if not exists figure_vectors (
   figure_id integer primary key references figures(id) on delete cascade,

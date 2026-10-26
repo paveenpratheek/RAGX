@@ -297,6 +297,7 @@ table.docs { width: 100%; border-collapse: separate; border-spacing: 0; backgrou
 .notex-box .state.changed { color: var(--accent); }
 /* Kept in RAGX by NoteX's auto-sync. */
 .origin.kept { background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green); }
+.origin.place { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); cursor: help; }
 .notex-box td.kept { color: var(--green); }
 .docs .err { color: var(--red); font-size: 12px; }
 .docs .acts { white-space: nowrap; text-align: right; width: 1%; }

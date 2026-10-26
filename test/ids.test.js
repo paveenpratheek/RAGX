@@ -60,7 +60,7 @@ test('an older index is upgraded once: every id kept, and none given out again t
   for (const name of ['documents', 'chunks', 'figures', 'linked_images']) {
     assert.match(store.db.prepare('select sql from sqlite_master where name = ?').get(name).sql, /autoincrement/i, name);
   }
-  assert.equal(store.getMeta('schema_version'), '6');
+  assert.equal(store.getMeta('schema_version'), '7');
   assert.equal(store.doc(a.id).name, 'a.md');
   assert.deepEqual(store.docChunkIds(a.id), a.chunks);
   assert.equal(store.figure(a.figures[0]).doc_id, a.id);

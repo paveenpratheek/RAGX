@@ -29,6 +29,37 @@ export function notexFile(folder, name) {
   return fs.existsSync(file) ? file : null;
 }
 
+/* The files NoteX lists beside a canvas's document, <canvas>.files.json,
+ * each with its place (t-fff1f21827); null when NoteX wrote no list, as
+ * before phase 4. */
+export function notexFileList(folder, canvas) {
+  const name = `${canvas}.files.json`;
+  if (!canvas || name !== path.basename(name)) return null;
+  try {
+    const v = JSON.parse(fs.readFileSync(path.join(folder, name), 'utf8'));
+    return Array.isArray(v.files) ? v.files : [];
+  } catch (_) { return null; }
+}
+
+/* Why RAGX will not read a listed file, or null when it may (t-7c03feb73f):
+ * a path in NoteX's list is only NoteX's word, so the file must be the one
+ * the list names, File Fabric's copy in this canvas's sources/ folder, of a
+ * kind RAGX reads as a document, inside a folder RAGX's own Settings allow -
+ * the folders it may show linked images from. Its bytes are checked against
+ * the listed hash when it is read. */
+export function canvasFileProblem(f, { canvas, folders, readable }) {
+  if (!f || typeof f.name !== 'string' || typeof f.path !== 'string' || typeof f.sha256 !== 'string' || typeof (f.address ?? '') !== 'string') return 'not a file entry';
+  if (!f.name || f.name !== path.basename(f.name)) return 'not a bare file name';
+  if (!readable.includes(path.extname(f.name).toLowerCase())) return 'not a kind of file RAGX reads as a document';
+  if (!path.isAbsolute(f.path)) return 'not a full path';
+  const abs = path.resolve(f.path);
+  if (path.basename(abs) !== f.name || path.basename(path.dirname(abs)) !== 'sources' || path.basename(path.dirname(path.dirname(abs))) !== canvas) {
+    return `not File Fabric's copy in ${canvas}/sources/`;
+  }
+  if (!folders.some((dir) => inside(dir, abs))) return `outside the folders RAGX may read from File Fabric - add the workspace to them in Settings`;
+  return null;
+}
+
 /* The canvases NoteX keeps in RAGX by auto-sync, and when each was last
  * synced: NoteX's config.json beside its docs folder, read only
  * (t-9ba4e48993, t-96cbf048b2). Nothing kept when there is none. */

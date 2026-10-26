@@ -63,7 +63,7 @@ export function findPlace(map, at) {
 const DIR = { left: 'to the left', right: 'to the right', above: 'above', below: 'below', inside: 'overlapping' };
 
 /* One place's card, as text for an agent (t-136d2cac64). */
-export function card(map, place, text = new Map(), { canvas, behind = false, reading = false } = {}) {
+export function card(map, place, text = new Map(), { canvas, behind = false, reading = false, inLibrary = [] } = {}) {
   const byId = new Map(map.places.map((p) => [p.id, p]));
   const lines = [];
   const kind = (p) => ({ fabric: 'canvas', scroll: 'scroll box', canvas: 'open canvas' }[p.kind] || p.kind);
@@ -101,6 +101,9 @@ export function card(map, place, text = new Map(), { canvas, behind = false, rea
   const others = files.filter((f) => f.kind !== 'image').map((f) => `${f.name}${f.kind && f.kind !== 'file' ? ` (${f.kind})` : ''}`);
   if (images.length) lines.push(`Images: ${images.join('; ')}`);
   if (others.length) lines.push(`Files: ${others.join('; ')}`);
+  // The files here the library holds as documents of their own (t-fff1f21827).
+  const ready = inLibrary.filter((d) => d.status === 'ready');
+  if (ready.length) lines.push(`In RAGX as documents: ${ready.map((d) => d.name).join('; ')} - ragx_search with documents: [name] searches one.`);
 
   const section = text.get(fabric ? '' : place.address);
   if (section != null) lines.push(`Its section: ${words(section)} words${reading ? '' : ' - ragx_place with read: true gives it whole'}.`);
@@ -126,7 +129,7 @@ export function canvasDoc(docs, name) {
 }
 
 /* What ragx_place answers: a place's card, or with read its whole section. */
-export function place({ docs, name, at = '', read = false, folder, fileOf }) {
+export function place({ docs, name, at = '', read = false, folder, fileOf, placesAt = () => [] }) {
   const doc = canvasDoc(docs, name);
   const fabric = doc.name.slice(0, -SUFFIX.length);
   let map;
@@ -144,7 +147,7 @@ export function place({ docs, name, at = '', read = false, folder, fileOf }) {
     throw new PlaceError('many-places', `"${at}" fits ${found.many.length} places on ${fabric} - give the address:\n${found.many.slice(0, 12).map((p) => `- ${p.address}`).join('\n')}`);
   }
   const p = found.place;
-  const head = card(map, p, text, { canvas: fabric, behind, reading: read });
+  const head = card(map, p, text, { canvas: fabric, behind, reading: read, inLibrary: placesAt(fabric, p.kind === 'fabric' ? '' : p.address) });
   if (!read) return { doc, place: p, text: head };
   const section = text.get(p.kind === 'fabric' ? '' : p.address);
   if (section == null) return { doc, place: p, text: head };
