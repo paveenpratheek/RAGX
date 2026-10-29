@@ -3,12 +3,22 @@
     "PostToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit|Bash",
-        "hooks": [ { "type": "command", "command": "node \"E:/Coding CLI/workflow/Project GitX/mcp/workflow-hook.js\"" } ]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const f='E:/Coding CLI/workflow/Project GitX/mcp/workflow-hook.js';require('fs').existsSync(f)&&import(require('url').pathToFileURL(f))\""
+          }
+        ]
       }
     ],
     "Stop": [
       {
-        "hooks": [ { "type": "command", "command": "node \"E:/Coding CLI/workflow/Project GitX/mcp/workflow-hook.js\"" } ]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const f='E:/Coding CLI/workflow/Project GitX/mcp/workflow-hook.js';require('fs').existsSync(f)&&import(require('url').pathToFileURL(f))\""
+          }
+        ]
       }
     ]
   }
