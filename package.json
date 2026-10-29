@@ -2,6 +2,7 @@
   "name": "project-harness",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "description": "A RAG engine for ter-manager: documents in, cited passages out",
   "type": "module",
   "engines": {
