@@ -41,24 +41,24 @@ A demo RAG is about 50 lines: split the text, embed it, find the nearest chunks.
 flowchart LR
   subgraph Inputs
     F["PDF · DOCX · MD · TXT · images"]
-    N["NoteX canvas documents\n(+ files placed on canvases)"]
+    N["NoteX canvas documents<br/>(+ files placed on canvases)"]
   end
 
   subgraph Engine["RAGX engine (Node 24)"]
-    X["extract\nblocks + figures"] --> C["chunk\nheading-bounded"]
-    C --> E["embed\nOllama embeddinggemma-2"]
-    X --> R["read figures\nClaude Haiku"] --> E
-    E --> S[("SQLite\nFTS5 + vectors")]
-    Q["question"] --> H["hybrid search\nBM25 + vectors → RRF"]
+    X["extract<br/>blocks + figures"] --> C["chunk<br/>heading-bounded"]
+    C --> E["embed<br/>Ollama embeddinggemma-2"]
+    X --> R["read figures<br/>Claude Haiku"] --> E
+    E --> S[("SQLite<br/>FTS5 + vectors")]
+    Q["question"] --> H["hybrid search<br/>BM25 + vectors → RRF"]
     S --> H
-    H --> A["answer\nClaude Code / Antigravity\ncitations checked"]
-    T["tracker\nevery call, timed"]
+    H --> A["answer<br/>Claude Code / Antigravity<br/>citations checked"]
+    T["tracker<br/>every call, timed"]
   end
 
   F --> X
   N --> X
   A --> P["ter-manager page"]
-  H --> M["MCP server\nragx_search · ragx_passage\nragx_figure · ragx_place\nragx_documents"]
+  H --> M["MCP server<br/>ragx_search · ragx_passage<br/>ragx_figure · ragx_place<br/>ragx_documents"]
   M --> AG["AI coding agents"]
   CLI["command line"] --> Engine
 ```
