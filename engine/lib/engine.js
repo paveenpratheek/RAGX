@@ -25,6 +25,23 @@ import { readImage, readingBlocks, imageKey, READ_MODEL, READ_AT_ONCE, gate, Spa
 import { toPng } from './extract/figures.js';
 import { agentFolder, AgentError } from './agents/runner.js';
 
+/* A search's time window as two ISO times: from and to are each a date
+ * (2026-10-30) or a date and time; a bare date for to takes its whole day,
+ * and either may be left out (t-d9e3a576d5). */
+export function timeWindow(from, to) {
+  const parse = (v, end) => {
+    if (v == null || v === '') return end ? '9999-12-31T23:59:59.999Z' : '0000-01-01T00:00:00.000Z';
+    const s = String(v).trim();
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(s);
+    const t = Date.parse(day ? `${s}T${end ? '23:59:59.999' : '00:00:00.000'}Z` : s);
+    if (!Number.isFinite(t)) throw new EngineError('bad-time', `"${s}" is not a date - write it as 2026-10-30, or with a time as 2026-10-30T14:00.`);
+    return new Date(t).toISOString();
+  };
+  const a = parse(from, false), b = parse(to, true);
+  if (a > b) throw new EngineError('bad-time', `from (${from}) is after to (${to}).`);
+  return [a, b];
+}
+
 export class EngineError extends Error {
   constructor(code, message) {
     super(message);
@@ -210,17 +227,25 @@ export class Engine {
    * goes only when it came from canvases and no place is left - one the
    * user added stays. A file replaced in its place carries the
    * conversations kept to the old one over to it. */
-  async syncCanvasFiles(canvas, files, { onProgress = () => {}, onRemoved = () => {} } = {}) {
+  async syncCanvasFiles(canvas, files, { onProgress = () => {}, onRemoved = () => {}, drops = false } = {}) {
     const key = (x) => `${x.address || ''}\0${x.name}`;
     const before = new Map(this.store.canvasPlaces(canvas).map((p) => [key(p), p]));
     const out = { added: [], placed: [], unplaced: [], removed: [], errors: [], results: [] };
     const listed = new Set();
     const left = new Map(); // doc id -> the document that took its place, or null
+    // A list of drops (t-a3a1000832) keeps each drop's id and time beside its place.
+    if (drops) {
+      const want = new Set(files.map((f) => f.drop && f.drop.id).filter(Boolean));
+      for (const d of this.store.canvasDrops(canvas)) if (!want.has(d.id)) this.store.deleteDrop(d.id);
+    }
     for (const f of files) {
       listed.add(key(f));
       const had = before.get(key(f));
       let doc = this.store.docBySha(f.sha256);
-      if (doc && had && had.docId === doc.id) continue;
+      if (doc && had && had.docId === doc.id) {
+        if (f.drop) this.store.setDrop(f.drop.id, doc.id, { canvas, at: f.drop.at });
+        continue;
+      }
       if (!doc || doc.status !== STATUS.ready) {
         const r = await this.ingest(f.path, { name: f.name, origin: 'notex', onProgress });
         if (r.status === 'error' || !r.doc) { out.errors.push({ name: f.name, address: f.address, error: r.error || 'not added' }); continue; }
@@ -229,6 +254,7 @@ export class Engine {
         out.added.push({ name: f.name, address: f.address, docId: doc.id });
       } else out.placed.push({ name: f.name, address: f.address, docId: doc.id });
       this.store.setPlace(doc.id, { canvas, address: f.address, name: f.name });
+      if (f.drop) this.store.setDrop(f.drop.id, doc.id, { canvas, at: f.drop.at });
       if (had && had.docId !== doc.id) left.set(had.docId, doc.id);
     }
     for (const [k, p] of before) {
@@ -550,7 +576,14 @@ export class Engine {
   /* docIds: only these documents, or null for all. Ids of documents since
    * removed simply drop out; none left means nothing is searched, never
    * everything (t-6fbca7a8a6). */
-  async search(question, { k = 8, docIds = null } = {}) {
+  async search(question, { k = 8, docIds = null, from = null, to = null } = {}) {
+    // A time window keeps the documents dropped, or else added, in it (t-d9e3a576d5).
+    if (from || to) {
+      const [a, b] = timeWindow(from, to);
+      const inTime = this.store.docsInTime(a, b);
+      docIds = docIds ? docIds.map(Number).filter((id) => inTime.includes(id)) : inTime;
+      if (!docIds.length) return { passages: [], warning: null, timings: { embedMs: 0, loadMs: 0, searchMs: 0 } };
+    }
     if (docIds) {
       docIds = [...new Set(docIds.map(Number))].filter((id) => this.store.doc(id));
       if (!docIds.length) return { passages: [], warning: null, timings: { embedMs: 0, loadMs: 0, searchMs: 0 } };

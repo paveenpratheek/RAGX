@@ -193,9 +193,13 @@ export function hybridSearch({ store, index, figureIndex = null, question, query
   const out = [...[...own, ...asFigure.values()].sort((a, b) => b.score - a.score), ...alone];
   // Where each result's document sits on File Fabric canvases (t-fff1f21827).
   const placed = new Map();
+  const dropped = new Map();
   for (const p of out) {
     if (!placed.has(p.docId)) placed.set(p.docId, store.placesOf(p.docId));
     if (placed.get(p.docId).length) p.places = placed.get(p.docId);
+    // And when the user dropped it in NoteX's Inbox, if they did (t-d9e3a576d5).
+    if (!dropped.has(p.docId)) dropped.set(p.docId, store.dropsOf(p.docId));
+    if (dropped.get(p.docId).length) p.droppedAt = dropped.get(p.docId)[0].droppedAt;
   }
   return out;
 }

@@ -34,6 +34,8 @@ const USAGE = `usage: node engine/cli.js --data-dir <folder> <command>
                           [--replace]  as the new version of the documents with its name
   resume                  finish documents an interrupted run left half-done
   search <question>       best passages for a question  [--k 8] [--json]
+                          [--from 2026-10-01] [--to 2026-10-30]: only documents
+                          dropped (or added) in that window
   ask <question>          a cited answer from Claude or agy
                           [--agent claude|agy] [--model <name>] [--conversation <id>] [--json]
   conversations [<id>]    past conversations, or one in full
@@ -159,7 +161,7 @@ async function main(argv) {
         const question = rest.join(' ').trim();
         if (!question) throw new UsageError('search needs a question.');
         const started = Date.now();
-        const { passages, warning, timings } = await engine.search(question, { k: Number(opts.k) || 8 });
+        const { passages, warning, timings } = await engine.search(question, { k: Number(opts.k) || 8, from: opts.from || null, to: opts.to || null });
         new Tracker(engine.store).record({ source: 'cli', client: 'cli', kind: 'search', question, ms: Date.now() - started, timings,
           results: passages.length, detail: { passages: passages.map((p) => ({ docName: p.docName, heading: p.heading, pageFrom: p.pageFrom, pageTo: p.pageTo, score: p.score, chunkIds: p.chunkIds, text: p.text })), warning } });
         if (opts.json) { console.log(JSON.stringify({ passages, warning }, null, 2)); return 0; }

@@ -61,6 +61,8 @@ const TOOLS = [
           type: 'array', items: { type: 'string' },
           description: 'Only search these documents - names as ragx_documents lists them (or a unique part of a name). Leave out to search every document.',
         },
+        from: { type: 'string', description: 'Only documents the user dropped (or added) on or after this date, e.g. "2026-10-01" or "2026-10-01T09:00".' },
+        to: { type: 'string', description: 'Only documents the user dropped (or added) on or before this date; a bare date includes that whole day.' },
       },
       required: ['query'],
     },
@@ -204,7 +206,10 @@ async function call(name, a = {}) {
         }
         only = ` in ${docs.map((id) => all.find((d) => d.id === id).name).join('; ')}`;
       }
-      const r = await request('POST', '/api/search', { q: query, k, docs });
+      // A time window keeps what the user dropped, or added, in it (t-d9e3a576d5).
+      const from = a.from ? String(a.from) : null, to = a.to ? String(a.to) : null;
+      if (from || to) only += ` ${from && to ? `from ${from} to ${to}` : from ? `since ${from}` : `up to ${to}`}`;
+      const r = await request('POST', '/api/search', { q: query, k, docs, from, to });
       if (!r.passages.length) return ok(`Nothing in the user's documents${only} matches "${query}".`);
       // What Claude read in a figure goes with it, shortened and labelled (t-c81bd67c8d).
       const read = (text, max) => (text ? `\nRead from the image (machine-read, may contain errors): ${clip(text.replace(/\s+/g, ' '), max)}` : '');
@@ -212,7 +217,8 @@ async function call(name, a = {}) {
       const beside = (p) => (p.figures || []).map((f) => `\nFigure beside it: figure ${f.figureId}${f.caption ? ` - ${f.caption}` : ''}${read(f.reading, 300)}`).join('')
         + (p.images || []).map((im) => `\nImage at this place: ${im.name} - ${im.path}`).join('');
       // A file placed on a canvas says where, so ragx_place can show what is around it (t-fff1f21827).
-      const placed = (p) => (p.places && p.places.length ? `\nOn a File Fabric canvas: ${p.places.map((x) => (x.address ? `${x.canvas} at ${x.address}` : x.canvas)).join('; ')}` : '');
+      const placed = (p) => (p.places && p.places.length ? `\nOn a File Fabric canvas: ${p.places.map((x) => (x.address ? `${x.canvas} at ${x.address}` : x.canvas)).join('; ')}` : '')
+        + (p.droppedAt ? `\nDropped in NoteX's Inbox: ${p.droppedAt.slice(0, 16).replace('T', ' ')} UTC` : '');
       const parts = r.passages.map((p, i) => (p.figureId
         ? `[${i + 1}] ${p.docName}${where(p)}${p.heading ? ' - ' + p.heading : ''}  (FIGURE ${p.figureId})\n${p.text}${read(p.reading, 700)}${placed(p)}`
         : `[${i + 1}] ${p.docName}${where(p)}${p.heading ? ' - ' + p.heading : ''}  (passage ${p.chunkIds[0]})\n${p.text}${beside(p)}${placed(p)}`));

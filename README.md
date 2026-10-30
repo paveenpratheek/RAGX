@@ -4,7 +4,7 @@
 
 ![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)
 ![Node 24](https://img.shields.io/badge/node-%E2%89%A524-green)
-![Tests](https://img.shields.io/badge/tests-204-brightgreen)
+![Tests](https://img.shields.io/badge/tests-209-brightgreen)
 
 RAGX reads your PDFs, Word files, Markdown, text files and images, and answers questions about them. Each answer cites the passages and figures it used, and those citations are checked before you see them. Documents and search stay on your machine; only the question and the passages it found go to the answering model. RAGX works three ways:
 
@@ -76,6 +76,8 @@ flowchart LR
 - Figures (charts, diagrams, pictures, scanned pages) are cropped, stored, read by Claude Haiku and searchable by description.
 - File Fabric canvases are kept apart from ordinary files. When a canvas is updated, only its changed places are re-embedded.
 - Files placed on a canvas come in as documents that remember where they sit, with an "On <canvas>" badge and their place shown in every source.
+- **Drops from NoteX's Inbox** (the gold layer of the medallion pipeline): each drop NoteX's agent placed on an agent canvas comes in as a document of its own, with its place and the time it was dropped. RAGX takes only files from NoteX's bronze whose bytes match the listed hash. A drop forgotten in NoteX leaves the library.
+- **Search by time**: `from` and `to` keep a search to what was dropped (or, never dropped, added) in that window, on the page's engine, `ragx_search` and `search --from --to`.
 
 **Ask**
 - Cited answers in conversations. Follow-ups resume the same agent session instead of resending the history.
@@ -86,7 +88,7 @@ flowchart LR
 
 | Tool | What it gives the agent |
 |---|---|
-| `ragx_search` | best passages and figures for a question |
+| `ragx_search` | best passages and figures for a question, optionally only from documents dropped or added between `from` and `to` |
 | `ragx_passage` | one passage with the text around it |
 | `ragx_figure` | the figure image itself |
 | `ragx_documents` | the library, with where each canvas file sits |
@@ -117,10 +119,10 @@ If the engine isn't running, the agent's call shows up as a request in the page'
 | | |
 |---|---|
 | Engine and page source | ~8,800 lines |
-| Tests | 204 (199 run offline; 5 live tests need Ollama models) in ~4,000 lines |
+| Tests | 209 (204 run offline; 5 live tests need Ollama models) in ~4,000 lines |
 | Runtime dependencies | 2 |
 | Commits | 45, each explaining *why* |
-| Database schema | version 7, with migrations for existing libraries |
+| Database schema | version 8, with migrations for existing libraries |
 
 ---
 

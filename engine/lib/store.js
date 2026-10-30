@@ -31,6 +31,13 @@ export class Store {
       setPlace: p('insert into doc_places (doc_id, canvas, address, name) values (?, ?, ?, ?) on conflict (canvas, address, name) do update set doc_id = excluded.doc_id'),
       dropPlace: p('delete from doc_places where canvas = ? and address = ? and name = ?'),
       placeCount: p('select count(*) n from doc_places where doc_id = ?'),
+      setDrop: p(`insert into drops (id, doc_id, canvas, dropped_at) values (?, ?, ?, ?)
+                  on conflict (id) do update set doc_id = excluded.doc_id, canvas = excluded.canvas, dropped_at = excluded.dropped_at`),
+      canvasDrops: p('select id, doc_id docId, dropped_at droppedAt from drops where canvas = ?'),
+      deleteDrop: p('delete from drops where id = ?'),
+      dropsOf: p('select id, canvas, dropped_at droppedAt from drops where doc_id = ? order by dropped_at'),
+      docsInTime: p(`select d.id from documents d
+                     where coalesce((select min(x.dropped_at) from drops x where x.doc_id = d.id), d.added_at) between ? and ?`),
       doc: p(`select d.*, (select count(*) from figures f where f.doc_id = d.id) figures,
                 (select count(*) from figures f where f.doc_id = d.id and f.read = 1) figures_read from documents d where d.id = ?`),
       maxOrd: p('select coalesce(max(ord), -1) m from chunks where doc_id = ?'),
@@ -134,6 +141,14 @@ export class Store {
   setPlace(docId, { canvas, address = '', name }) { this.q.setPlace.run(docId, canvas, address, name); }
   dropPlace({ canvas, address = '', name }) { this.q.dropPlace.run(canvas, address, name); }
   placeCount(docId) { return this.q.placeCount.get(docId).n; }
+
+  /* Drops from NoteX's Inbox, and the documents they came in as (t-a3a1000832). */
+  setDrop(id, docId, { canvas, at }) { this.q.setDrop.run(id, docId, canvas, at); }
+  canvasDrops(canvas) { return this.q.canvasDrops.all(canvas).map((r) => ({ ...r })); }
+  deleteDrop(id) { this.q.deleteDrop.run(id); }
+  dropsOf(docId) { return this.q.dropsOf.all(docId).map((r) => ({ ...r })); }
+  /* The documents dropped - or, never dropped, added - between two ISO times (t-d9e3a576d5). */
+  docsInTime(from, to) { return this.q.docsInTime.all(from, to).map((r) => r.id); }
   doc(id) { return this.q.doc.get(id) || null; }
   docs() { return this.q.docs.all(); }
 

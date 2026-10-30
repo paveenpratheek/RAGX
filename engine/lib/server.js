@@ -37,7 +37,7 @@ import { takeLock, agentRecord, endOrphans, writeRuntime, writeLocal } from './l
 import { OllamaControl } from './ollama.js';
 import { Tracker, modelReader } from './tracker.js';
 import { IMAGE_TYPES, SUPPORTED } from './extract/index.js';
-import { notexFolder, notexFile, notexStatus, notexFileList, canvasFileProblem } from './notex.js';
+import { notexFolder, notexFile, notexStatus, notexFileList, canvasFileProblem, notexDropList, dropProblem } from './notex.js';
 import { place as placeCard, PlaceError } from './place.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -60,7 +60,7 @@ function statusOf(e) {
   const code = e && e.code;
   if (code === 'not-found') return 404;
   if (e instanceof PlaceError) return e.code === 'many-places' ? 409 : 404;
-  if (code === 'bad-image') return 400;
+  if (code === 'bad-image' || code === 'bad-time') return 400;
   if (code === 'busy' || code === 'wrong-agent' || code === 'needs-reembed' || code === 'pool-full') return 409;
   if (e instanceof EmbedError || e instanceof AgentError) return 503;
   if (e instanceof AskError) return 400;
@@ -258,27 +258,39 @@ export async function startServer({
    * RAGX may read are taken (t-7c03feb73f); one refused is said once, not
    * after every save. */
   const READS_AS_DOCUMENT = SUPPORTED.filter((x) => !IMAGE_TYPES.includes(x));
-  const refusedBefore = new Map(); // canvas -> what was refused last time
-  const canvasFilesJob = (folder, canvas) => {
-    const list = notexFileList(folder, canvas);
+  const refusedBefore = new Map(); // canvas (and list) -> what was refused last time
+  const canvasFilesJob = (folder, canvas) => placesJob(canvas, notexFileList(folder, canvas),
+    (f) => canvasFileProblem(f, { canvas, folders: imageFolders(), readable: READS_AS_DOCUMENT }), { drops: false });
+  /* The drops NoteX placed on an agent canvas, each a document of its own
+   * with its place and drop time (t-a3a1000832). Images come in too: an
+   * agent canvas has no canvas document holding their readings. */
+  const canvasDropsJob = (folder, canvas) => placesJob(canvas, notexDropList(folder, canvas),
+    (f) => dropProblem(f, { folder, readable: SUPPORTED }), { drops: true });
+  const placesJob = (canvas, list, problemOf, { drops }) => {
     if (list === null) return null;
     const checked = [];
     const refused = [];
     for (const f of list) {
-      const why = canvasFileProblem(f, { canvas, folders: imageFolders(), readable: READS_AS_DOCUMENT });
+      const why = problemOf(f);
       if (why) refused.push({ name: f && f.name, error: `${f && f.name}: ${why}.` });
-      else checked.push({ name: f.name, sha256: f.sha256, address: f.address || '', path: path.resolve(f.path) });
+      else checked.push({ name: f.name, sha256: f.sha256, address: f.address || '', path: path.resolve(f.path), ...(drops ? { drop: { id: f.drop.id, at: new Date(f.drop.at).toISOString() } } : {}) });
     }
     const places = engine.store.canvasPlaces(canvas);
+    const kept = drops ? new Map(engine.store.canvasDrops(canvas).map((d) => [d.id, d])) : null;
     const same = (f) => {
       const p = places.find((x) => x.address === f.address && x.name === f.name);
       const d = p && engine.store.doc(p.docId);
-      return Boolean(d && d.sha256 === f.sha256 && d.status === 'ready');
+      if (!d || d.sha256 !== f.sha256 || d.status !== 'ready') return false;
+      if (!drops) return true;
+      const k = kept.get(f.drop.id);
+      return Boolean(k && k.docId === p.docId && k.droppedAt === f.drop.at);
     };
-    const gone = places.some((p) => !checked.some((f) => f.address === p.address && f.name === p.name));
+    const gone = places.some((p) => !checked.some((f) => f.address === p.address && f.name === p.name))
+      || (drops && [...kept.keys()].some((id) => !checked.some((f) => f.drop.id === id)));
     const refusedNow = JSON.stringify(refused);
-    const newlyRefused = refused.length && refusedBefore.get(canvas) !== refusedNow;
-    refusedBefore.set(canvas, refusedNow);
+    const refusedKey = `${canvas}\0${drops ? 'drops' : 'files'}`;
+    const newlyRefused = refused.length && refusedBefore.get(refusedKey) !== refusedNow;
+    refusedBefore.set(refusedKey, refusedNow);
     if (!gone && !newlyRefused && checked.every(same)) return null;
     return async () => {
       // The bytes must be the ones NoteX listed; a file saved since waits for the next sync.
@@ -289,7 +301,7 @@ export async function startServer({
         if (sha !== f.sha256) return [{ status: 'error', name: f.name, error: `${f.name} changed since NoteX listed it - the next sync takes it.` }];
       }
       const o = await engine.syncCanvasFiles(canvas, checked, {
-        onProgress, onRemoved: (old, by) => emit({ type: 'removed', docId: old.id, name: old.name, replacedBy: by ? by.id : null }),
+        drops, onProgress, onRemoved: (old, by) => emit({ type: 'removed', docId: old.id, name: old.name, replacedBy: by ? by.id : null }),
       });
       emit({ type: 'places', canvas, added: o.added.length, placed: o.placed.length, unplaced: o.unplaced.length, removed: o.removed.length });
       return [...o.results, ...[...refused, ...o.errors].map((e) => ({ status: 'error', name: e.name, error: e.error }))];
@@ -423,6 +435,16 @@ export async function startServer({
       }
       return json(202, { queued, files });
     }
+    /* NoteX's placed drops for one agent canvas (t-a3a1000832). */
+    if (m('POST', /^\/api\/notex\/drops$/)) {
+      const { canvas } = await readJson(req);
+      if (typeof canvas !== 'string' || !canvas) throw new HttpError(400, 'bad-body', 'Send {"canvas": "<agent canvas>"}.');
+      const folder = notexDir();
+      if (notexDropList(folder, canvas) === null) throw new HttpError(404, 'not-found', `No ${canvas}.drops.json in ${folder}.`);
+      const job = canvasDropsJob(folder, canvas);
+      if (job) enqueue(`${canvas} - drops`, job, null, { ...whoIs(req), kind: 'ingest' });
+      return json(202, { queued: Boolean(job) });
+    }
 
     if (m('POST', /^\/api\/docs\/path$/)) {
       const { path: file, replace = false } = await readJson(req);
@@ -514,14 +536,14 @@ export async function startServer({
     }
 
     if (m('POST', /^\/api\/search$/)) {
-      const { q, k, docs } = await readJson(req);
+      const { q, k, docs, from = null, to = null } = await readJson(req);
       if (!q) throw new HttpError(400, 'no-question', 'Give the search in q.');
       const docIds = docList(docs);
       const started = Date.now();
       const who = whoIs(req);
       const run = tracker.begin({ ...who, kind: 'search', question: String(q), phase: 'searching' });
       let r;
-      try { r = await engine.search(String(q), { k: Number(k) || 8, docIds }); } catch (e) {
+      try { r = await engine.search(String(q), { k: Number(k) || 8, docIds, from, to }); } catch (e) {
         tracker.record({ ...who, run, kind: 'search', question: String(q), ms: Date.now() - started, error: e.message });
         throw e;
       }

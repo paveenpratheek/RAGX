@@ -60,6 +60,35 @@ export function canvasFileProblem(f, { canvas, folders, readable }) {
   return null;
 }
 
+/* The drops NoteX placed on an agent canvas, <canvas>.drops.json beside its
+ * documents: each with its place and its drop (t-a3a1000832); null when
+ * NoteX wrote no list. */
+export function notexDropList(folder, canvas) {
+  const name = `${canvas}.drops.json`;
+  if (!canvas || name !== path.basename(name)) return null;
+  try {
+    const v = JSON.parse(fs.readFileSync(path.join(folder, name), 'utf8'));
+    return Array.isArray(v.files) ? v.files : [];
+  } catch (_) { return null; }
+}
+
+/* NoteX's bronze, where a drop's bytes are kept: beside its docs folder. */
+export const bronzeOf = (folder) => path.join(folder, '..', 'bronze', 'blobs');
+
+/* Why RAGX will not take a listed drop, or null when it may: as for a
+ * canvas file, the list is only NoteX's word - the file must be in NoteX's
+ * bronze, of a kind RAGX reads, its drop an id and a time. Its bytes are
+ * checked against the listed hash when it is read. */
+export function dropProblem(f, { folder, readable }) {
+  if (!f || typeof f.name !== 'string' || typeof f.path !== 'string' || typeof f.sha256 !== 'string' || typeof (f.address ?? '') !== 'string') return 'not a drop entry';
+  if (!f.drop || !/^d-[0-9a-f]{10}$/.test(String(f.drop.id)) || !Number.isFinite(Date.parse(f.drop.at))) return 'no drop id and time';
+  if (!f.name || f.name !== path.basename(f.name)) return 'not a bare file name';
+  if (!readable.includes(path.extname(f.name).toLowerCase())) return 'not a kind of file RAGX reads';
+  if (!path.isAbsolute(f.path)) return 'not a full path';
+  if (!inside(bronzeOf(folder), f.path)) return "not in NoteX's bronze, beside its docs folder";
+  return null;
+}
+
 /* The canvases NoteX keeps in RAGX by auto-sync, and when each was last
  * synced: NoteX's config.json beside its docs folder, read only
  * (t-9ba4e48993, t-96cbf048b2). Nothing kept when there is none. */

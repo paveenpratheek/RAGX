@@ -5,7 +5,7 @@
  */
 import { DatabaseSync } from 'node:sqlite';
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 const SCHEMA = `
 create table if not exists meta (
@@ -109,6 +109,17 @@ create table if not exists doc_places (
   primary key (canvas, address, name)
 );
 create index if not exists doc_places_doc on doc_places (doc_id);
+
+/* What the user dropped in NoteX's Inbox and NoteX placed on an agent
+ * canvas: the drop, the document it came in as, and when it was dropped,
+ * which a search can be limited by (t-a3a1000832, t-d9e3a576d5). */
+create table if not exists drops (
+  id         text primary key,
+  doc_id     integer not null references documents(id) on delete cascade,
+  canvas     text not null,
+  dropped_at text not null
+);
+create index if not exists drops_doc on drops (doc_id);
 
 create table if not exists figure_vectors (
   figure_id integer primary key references figures(id) on delete cascade,
