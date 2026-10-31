@@ -126,7 +126,11 @@ test('the canvases NoteX keeps in RAGX by auto-sync are marked, from its config.
   fs.writeFileSync(config, JSON.stringify({ workspace: 'E:\ws', sync: { Thesis: { synced: 123, at: '2026-10-25T12:00:00.000Z' }, Gone: { synced: null, at: null } } }));
   list = (await call('/api/notex')).body;
   assert.equal(list.kept, 2, 'every canvas switched on counts, written by NoteX or not');
-  assert.deepEqual(list.files.map((f) => [f.fabric, f.kept]).sort(), [['Board', null], ['Thesis', { at: '2026-10-25T12:00:00.000Z' }]]);
+  assert.deepEqual(list.files.map((f) => [f.fabric, f.kept]).sort(), [['Board', null], ['Thesis', { at: '2026-10-25T12:00:00.000Z', agent: false }]]);
+  // An entry NoteX marks auto is a canvas assigned to the agent, which NoteX always keeps (t-961c415202).
+  fs.writeFileSync(config, JSON.stringify({ workspace: 'E:\ws', sync: { Board: { synced: 1, at: '2026-10-31T09:00:00.000Z', auto: true } } }));
+  list = (await call('/api/notex')).body;
+  assert.deepEqual(list.files.find((f) => f.fabric === 'Board').kept, { at: '2026-10-31T09:00:00.000Z', agent: true });
 
   fs.writeFileSync(config, '{ half written');
   assert.equal((await call('/api/notex')).body.kept, 0, 'a config caught mid-write marks nothing rather than failing');

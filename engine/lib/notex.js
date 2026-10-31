@@ -91,11 +91,13 @@ export function dropProblem(f, { folder, readable }) {
 
 /* The canvases NoteX keeps in RAGX by auto-sync, and when each was last
  * synced: NoteX's config.json beside its docs folder, read only
- * (t-9ba4e48993, t-96cbf048b2). Nothing kept when there is none. */
+ * (t-9ba4e48993, t-96cbf048b2). Nothing kept when there is none. An entry
+ * NoteX marks auto is a canvas assigned to the agent, which NoteX always
+ * keeps (NoteX t-65a490ef80, t-961c415202). */
 export function notexKept(folder) {
   try {
     const sync = JSON.parse(fs.readFileSync(path.join(folder, '..', 'config.json'), 'utf8')).sync || {};
-    return Object.fromEntries(Object.entries(sync).map(([fabric, s]) => [fabric, { at: (s && s.at) || null }]));
+    return Object.fromEntries(Object.entries(sync).map(([fabric, s]) => [fabric, { at: (s && s.at) || null, agent: Boolean(s && s.auto) }]));
   } catch (_) { return {}; }
 }
 

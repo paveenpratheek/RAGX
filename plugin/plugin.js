@@ -727,12 +727,12 @@ function renderScope() {
   ca.dataset.all = '1';
   ca.checked = !S.scope;
   all.append(ca, el('span', null, 'All documents - including ones added later'));
-  // By where each came from: the user's files, File Fabric's canvases, what
-  // was dropped in NoteX's Inbox - by the agent canvas it was placed on - and
-  // other files on canvases (t-385f1e60fe).
+  // By where each came from: the user's files; the canvases assigned to the
+  // agent, each with what was dropped on it beneath; the user's other File
+  // Fabric canvases; other files on canvases (t-385f1e60fe, t-961c415202).
   const mine = docs.filter((d) => d.origin !== 'notex');
   const fromNotex = docs.filter((d) => d.origin === 'notex');
-  const canvases = fromNotex.filter((d) => /\.notex\.md$/i.test(d.name));
+  const canvasDocs = fromNotex.filter((d) => /\.notex\.md$/i.test(d.name));
   const dropped = new Map();
   for (const d of fromNotex) {
     if (!d.drops || !d.drops.length) continue;
@@ -740,12 +740,22 @@ function renderScope() {
     if (!dropped.has(on)) dropped.set(on, []);
     dropped.get(on).push(d);
   }
-  const onCanvases = fromNotex.filter((d) => !canvases.includes(d) && !(d.drops && d.drops.length));
+  // An agent canvas: one NoteX keeps by itself, or one with drops.
+  const agentNames = new Set(dropped.keys());
+  for (const f of (S.notex && S.notex.files) || []) if (f.kept && f.kept.agent) agentNames.add(f.fabric);
+  const docOf = (name) => canvasDocs.find((d) => d.name.toLowerCase() === `${name}.notex.md`.toLowerCase());
+  const agentItems = [...agentNames].sort().flatMap((name) => {
+    const doc = docOf(name);
+    const under = (dropped.get(name) || []).map((d) => { const l = box(d); l.classList.add('sub'); return l; });
+    return [...(doc ? [box(doc)] : [el('div', 'sub-head', name)]), ...under];
+  });
+  const canvases = canvasDocs.filter((d) => ![...agentNames].some((n) => docOf(n) === d));
+  const onCanvases = fromNotex.filter((d) => !canvasDocs.includes(d) && !(d.drops && d.drops.length));
   const section = (title, list) => (list.length ? [el('div', 'group', title), ...list.map(box)] : []);
   pop.replaceChildren(all,
     ...section('Added by you', mine),
+    ...(agentItems.length ? [el('div', 'group', 'Notes assigned to agent'), ...agentItems] : []),
     ...section('File Fabric canvases', canvases),
-    ...[...dropped.keys()].sort().flatMap((on) => section(`Dropped on ${on}`, dropped.get(on))),
     ...section('Files on canvases', onCanvases),
     ...(!docs.length ? [el('div', 'note', 'No documents are ready yet.')] : []),
     ...(chosen && !chosen.length ? [el('div', 'note', 'Tick at least one document to ask.')] : []));

@@ -264,6 +264,8 @@ button.cite.unknown { background: color-mix(in srgb, var(--red) 18%, transparent
 /* The composer row stretches its inputs (.row input); not these checkboxes. */
 .scope-pop input[type="checkbox"] { flex: none; width: auto; margin: 0; padding: 0; box-shadow: none; }
 .scope-pop .group { font-size: 11.5px; color: var(--muted); margin: 8px 0 2px; text-transform: uppercase; letter-spacing: .04em; }
+.scope-pop label.sub { padding-left: 22px; }
+.scope-pop .sub-head { font-size: 12.5px; color: var(--muted); margin: 4px 0 0; }
 .scope-pop .all { font-weight: 600; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
 .source { width: 380px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .source header { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; padding: 13px 16px; border-bottom: 1px solid var(--line); background: var(--head); }
