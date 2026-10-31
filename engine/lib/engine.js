@@ -655,7 +655,11 @@ export class Engine {
   }
 
   // Each with the canvas places it sits at, for the Library (t-fff1f21827).
-  list() { return this.store.docs().map((d) => ({ ...d, places: this.store.placesOf(d.id) })); }
+  /* Every document with its places on canvases and, for one NoteX's Inbox
+   * placed, its drops - the search range groups by them (t-385f1e60fe). */
+  list() { return this.store.docs().map((d) => this.shown(d)); }
+
+  shown(d) { return d ? { ...d, places: this.store.placesOf(d.id), drops: this.store.dropsOf(d.id) } : d; }
 
   stats() {
     const db = path.join(this.dir, 'rag.db');

@@ -178,7 +178,7 @@ export async function startServer({
       if (ollamaStart) await ollamaStart; // the first job after a start waits for Ollama
       const results = [].concat(await current.run());
       for (const [i, r] of results.entries()) {
-        emit(r.status === 'error' ? { type: 'ingest-error', name: r.doc ? r.doc.name : r.name, error: r.error } : { type: 'doc', status: r.status, doc: r.doc, replaced: r.replaced || [], reused: r.reused ?? null });
+        emit(r.status === 'error' ? { type: 'ingest-error', name: r.doc ? r.doc.name : r.name, error: r.error } : { type: 'doc', status: r.status, doc: engine.shown(r.doc), replaced: r.replaced || [], reused: r.reused ?? null });
         const t = r.timings || {};
         tracker.record({
           run: i === 0 ? current.live : null, ms: t.ms ?? null, source: current.who.source, client: current.who.client, kind: current.who.kind,

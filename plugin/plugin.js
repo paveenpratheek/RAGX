@@ -727,11 +727,26 @@ function renderScope() {
   ca.dataset.all = '1';
   ca.checked = !S.scope;
   all.append(ca, el('span', null, 'All documents - including ones added later'));
+  // By where each came from: the user's files, File Fabric's canvases, what
+  // was dropped in NoteX's Inbox - by the agent canvas it was placed on - and
+  // other files on canvases (t-385f1e60fe).
   const mine = docs.filter((d) => d.origin !== 'notex');
-  const canvases = docs.filter((d) => d.origin === 'notex');
+  const fromNotex = docs.filter((d) => d.origin === 'notex');
+  const canvases = fromNotex.filter((d) => /\.notex\.md$/i.test(d.name));
+  const dropped = new Map();
+  for (const d of fromNotex) {
+    if (!d.drops || !d.drops.length) continue;
+    const on = d.drops[0].canvas;
+    if (!dropped.has(on)) dropped.set(on, []);
+    dropped.get(on).push(d);
+  }
+  const onCanvases = fromNotex.filter((d) => !canvases.includes(d) && !(d.drops && d.drops.length));
+  const section = (title, list) => (list.length ? [el('div', 'group', title), ...list.map(box)] : []);
   pop.replaceChildren(all,
-    ...(mine.length ? [el('div', 'group', 'Added by you'), ...mine.map(box)] : []),
-    ...(canvases.length ? [el('div', 'group', 'From File Fabric'), ...canvases.map(box)] : []),
+    ...section('Added by you', mine),
+    ...section('File Fabric canvases', canvases),
+    ...[...dropped.keys()].sort().flatMap((on) => section(`Dropped on ${on}`, dropped.get(on))),
+    ...section('Files on canvases', onCanvases),
     ...(!docs.length ? [el('div', 'note', 'No documents are ready yet.')] : []),
     ...(chosen && !chosen.length ? [el('div', 'note', 'Tick at least one document to ask.')] : []));
 }

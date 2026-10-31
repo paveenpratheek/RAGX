@@ -74,6 +74,8 @@ test('a placed drop comes in as its own document, with its place and when it was
   assert.equal(d.origin, 'notex');
   assert.deepEqual(d.places, [{ canvas: 'Harness', address: 'RAGX (totem) > Ingest', name: 'scanned.md' }]);
   assert.deepEqual(s.engine.store.dropsOf(d.id), [{ id: 'd-0123456789', canvas: 'Harness', droppedAt: '2026-10-20T09:30:00.000Z' }]);
+  // The document list carries its drops, so the search range can group it under its canvas (t-385f1e60fe).
+  assert.deepEqual(d.drops, [{ id: 'd-0123456789', canvas: 'Harness', droppedAt: '2026-10-20T09:30:00.000Z' }]);
   // Sent again unchanged, there is nothing to do.
   assert.equal((await send('Harness', [{ name: 'scanned.md', ...b, address: 'RAGX (totem) > Ingest', drop: { id: 'd-0123456789', at: '2026-10-20T09:30:00.000Z' } }])).body.queued, false);
   const { passages } = await s.engine.search('scanned pages vector drawings', { k: 3 });
