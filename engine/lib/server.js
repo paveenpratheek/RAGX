@@ -35,6 +35,7 @@ import { AgySession } from './agents/agy.js';
 import { AgentPool } from './agents/pool.js';
 import { takeLock, agentRecord, endOrphans, writeRuntime, writeLocal } from './lifecycle.js';
 import { OllamaControl } from './ollama.js';
+import { listModels, canEmbed, ModelPull, ModelError, SUGGESTED, sameModel } from './models.js';
 import { Tracker, modelReader } from './tracker.js';
 import { IMAGE_TYPES, SUPPORTED } from './extract/index.js';
 import { notexFolder, notexFile, notexStatus, notexFileList, canvasFileProblem, notexDropList, dropProblem } from './notex.js';
@@ -56,7 +57,7 @@ class HttpError extends Error {
 
 /* An engine or agent failure, as the HTTP status and code the plugin acts on. */
 function statusOf(e) {
-  if (e instanceof HttpError) return e.status;
+  if (e instanceof HttpError || e instanceof ModelError) return e.status;
   const code = e && e.code;
   if (code === 'not-found') return 404;
   if (e instanceof PlaceError) return e.code === 'many-places' ? 409 : 404;
@@ -129,6 +130,15 @@ export async function startServer({
    * ended on the next start. */
   const ollamaCtl = manageOllama ? new OllamaControl({ host: engine.embedder.host, tracker: record, ...ollamaOptions }) : null;
   let ollamaStart = null; // the ensure() in flight or done
+  /* A model downloaded through the engine (t-ddf3190c54); when it is done,
+   * the next status check asks Ollama again. */
+  const ollamaHost = () => engine.embedder.host;
+  const ollamaFetch = (...a) => engine.embedder.fetchImpl(...a);
+  const pull = new ModelPull({
+    host: ollamaHost(), fetch: ollamaFetch,
+    emit: (e) => { if (e.pull.done) ollama = { at: 0, value: null }; emit(e); },
+    check: (model) => canEmbed({ host: ollamaHost(), fetch: ollamaFetch, model }),
+  });
 
   const pool = new AgentPool({
     open: openAgy || (({ resume, model }) => new AgySession({
@@ -351,7 +361,7 @@ export async function startServer({
     if (m('GET', /^\/api\/state$/)) {
       return json(200, {
         version: VERSION, pid: process.pid, dataDir: dir, uptimeMs: Math.round(process.uptime() * 1000),
-        ollama: await ollamaState(), agents: agentState(), settings: settings(),
+        ollama: await ollamaState(), pull: pull.state(), agents: agentState(), settings: settings(),
         totals: engine.store.totals(), queue: queue.map((j) => j.label), ingesting: current ? current.label : null,
         pool: pool.list(), conversations: engine.store.conversations().length,
         // Documents embedded another way: search refuses them until they are re-embedded.
@@ -618,6 +628,24 @@ export async function startServer({
       return json(200, { removed: id });
     }
 
+    /* The embedding models Ollama has, the ones worth suggesting, and a
+     * download in progress (t-d71c943186). */
+    if (m('GET', /^\/api\/ollama\/models$/)) {
+      if (ollamaStart) await ollamaStart;
+      const models = await listModels({ host: ollamaHost(), fetch: ollamaFetch });
+      return json(200, {
+        current: engine.embedder.model, models,
+        suggested: SUGGESTED.map((m) => ({ ...m, installed: models.some((x) => sameModel(x.name, m.name)) })),
+        pull: pull.state(),
+      });
+    }
+    if (m('POST', /^\/api\/ollama\/pull$/)) {
+      const { model } = await readJson(req);
+      if (ollamaStart) await ollamaStart;
+      return json(202, { pull: pull.start(String(model || '').trim()) });
+    }
+    if (m('DELETE', /^\/api\/ollama\/pull$/)) return json(200, { cancelled: pull.cancel(), pull: pull.state() });
+
     if (m('GET', /^\/api\/settings$/)) return json(200, settings());
 
     if (m('PUT', /^\/api\/settings$/)) {
@@ -768,6 +796,7 @@ export async function startServer({
       tracker.stop();
       queue.length = 0;
       for (const ac of inflight) ac.abort();
+      if (pull.cancel()) await pull.finished;
       await pool.closeAll();
       // An ingest step in flight finishes; the next one throws 'stopped'.
       for (let i = 0; current && i < 600; i++) await new Promise((r) => setTimeout(r, 100));

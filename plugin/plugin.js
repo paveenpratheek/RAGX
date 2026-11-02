@@ -118,6 +118,7 @@ async function refresh() {
   showOnline();
   showOllama(st.ollama);
   showStale(st);
+  if (st.pull && !st.pull.done) renderPull(st.pull);
   renderSettings();
   renderPool(st.pool);
   if (!was) {
@@ -239,6 +240,10 @@ function onEvent(e) {
       break;
     case 'ollama': // the engine finished starting (or finding) Ollama
       refresh();
+      if (S.tab === 'settings') loadModels();
+      break;
+    case 'pull':
+      pullEvent(e.pull);
       break;
     case 'call':
     case 'call-start':
@@ -857,7 +862,6 @@ function renderSettings() {
     f.agyModel.value = s.agyModel || '';
     f.claudePath.value = s.claudePath || '';
     f.agyPath.value = s.agyPath || '';
-    f.embedModel.value = s.model || '';
     f.queryPrefix.value = s.queryPrefix || '';
     f.docPrefix.value = s.docPrefix || '';
     f.readFigures.checked = s.readFigures !== false;
@@ -866,6 +870,7 @@ function renderSettings() {
     f.notexDocs.value = s.notexDocsSet || '';
     f.notexDocs.placeholder = s.notexDocs || f.notexDocs.placeholder;
   }
+  renderModels();
   renderReading();
   const facts = $('engine-facts');
   const row = (k, v) => [el('dt', null, k), el('dd', null, v)];
@@ -904,6 +909,103 @@ async function saveSettings(ev) {
     $('reembed').hidden = !r.stale;
     renderAgent();
   } catch (e) { $('settings-msg').textContent = e.message; }
+}
+
+/* -------------------------------------------------- embedding models */
+
+/* The model is chosen from the embedding models Ollama has; another is
+ * downloaded by the engine, its progress shown here (t-d71c943186,
+ * t-ddf3190c54). */
+async function loadModels() {
+  if (!S.up) return;
+  try { S.models = await engine.json('GET', '/api/ollama/models'); } catch (e) { S.models = { error: e.message }; }
+  renderModels();
+  if (S.models.pull) renderPull(S.models.pull, { quiet: true });
+}
+
+function fmtBytes(n) {
+  if (!n) return '';
+  return n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${Math.round(n / 1e6)} MB`;
+}
+
+function renderModels() {
+  const f = $('settings-form');
+  const st = S.state;
+  if (!st) return;
+  const current = st.settings.model;
+  const chosen = f.dataset.dirty ? f.embedModel.value || current : current;
+  const m = S.models && !S.models.error ? S.models : null;
+  const list = m ? m.models.slice() : [];
+  const same = (a, b) => (a.includes(':') ? a : a + ':latest') === (b.includes(':') ? b : b + ':latest');
+  const opts = list.map((x) => {
+    const o = el('option', null, [x.name, fmtBytes(x.size), x.vision ? 'text and figures' : 'text only'].filter(Boolean).join(' · '));
+    o.value = x.name;
+    return o;
+  });
+  // The setting stays listed when Ollama does not have it (or cannot be asked).
+  for (const name of new Set([current, chosen])) {
+    if (!list.some((x) => same(x.name, name))) {
+      const o = el('option', null, `${name} · ${m ? 'not downloaded' : 'Ollama not checked'}`);
+      o.value = name;
+      opts.unshift(o);
+    }
+  }
+  f.embedModel.replaceChildren(...opts);
+  const pick = list.find((x) => same(x.name, chosen));
+  f.embedModel.value = pick ? pick.name : chosen;
+  $('pull-suggest').replaceChildren(...(m ? m.suggested.filter((x) => !x.installed) : []).map((x) => {
+    const o = el('option');
+    o.value = x.name;
+    o.label = x.note;
+    return o;
+  }));
+  $('pull-name').placeholder = S.models && S.models.error ? S.models.error : 'a model name, e.g. bge-m3';
+}
+
+async function startPull(model) {
+  if (!model) { $('pull-name').focus(); return; }
+  try {
+    const r = await engine.json('POST', '/api/ollama/pull', { body: { model } });
+    renderPull(r.pull);
+  } catch (e) { toast(e.message, true); }
+}
+
+function renderPull(p, { quiet = false } = {}) {
+  const box = $('pull');
+  if (!p || (p.done && quiet)) { box.hidden = true; return; }
+  box.hidden = false;
+  const bar = $('pull-bar');
+  if (p.total) { bar.max = p.total; bar.value = p.completed; } else bar.removeAttribute('value');
+  $('pull-cancel').hidden = p.done;
+  $('pull-btn').disabled = !p.done;
+  const pct = p.total ? ` ${Math.floor((100 * p.completed) / p.total)}% of ${fmtBytes(p.total)}` : '';
+  const text = !p.done ? `Downloading ${p.model}:${pct || ` ${p.status}`}`
+    : p.ok ? (p.embeds === false ? `${p.model} is downloaded, but it cannot embed - choose an embedding model.` : `${p.model} is downloaded.`)
+      : `${p.model}: ${p.error}`;
+  $('pull-msg').textContent = text;
+  // The notice that asked for the model shows the same progress.
+  if (S.state && S.state.ollama && S.state.ollama.state === 'model-missing' && p.model === S.state.ollama.model && !p.done) {
+    $('ollama-msg').textContent = text;
+    $('ollama-pull').hidden = true;
+  }
+}
+
+/* A download finished: the list is read again and the new model chosen,
+ * unsaved - saving a model means embedding every document again
+ * (t-83ef294231). The model the engine was missing needs no choosing. */
+async function pullEvent(p) {
+  renderPull(p);
+  if (!p.done) return;
+  const f = $('settings-form');
+  if (!p.ok) { toast(`${p.model}: ${p.error}`, p.error !== 'Cancelled.'); return; }
+  if (S.state && p.model === S.state.settings.model) { toast(`${p.model} is downloaded - documents can be read now.`); refresh(); loadModels(); return; }
+  await loadModels();
+  if (p.embeds === false) return;
+  f.dataset.dirty = '1';
+  f.embedModel.value = [...f.embedModel.options].some((o) => o.value === p.model) ? p.model : f.embedModel.value;
+  f.embedModel.dispatchEvent(new Event('input', { bubbles: true }));
+  $('pull-name').value = '';
+  $('settings-msg').textContent = `${p.model} is chosen. Press Save to use it - every document is then embedded again.`;
 }
 
 /* ------------------------------------------------------------- tracker */
@@ -1294,6 +1396,7 @@ function showTab(tab) {
   document.querySelectorAll('[data-panel]').forEach((p) => { p.hidden = p.dataset.panel !== tab; });
   if (tab === 'ask') $('question').focus();
   if (tab === 'tracker') loadTracker();
+  if (tab === 'settings') loadModels();
 }
 
 /* ----------------------------------------------------------- wiring up */
@@ -1336,7 +1439,7 @@ function wire() {
     showOffline();
   });
   $('ollama-start').addEventListener('click', () => openTerminal('ollama serve', 'Ollama'));
-  $('ollama-pull').addEventListener('click', () => openTerminal(`ollama pull ${S.state.ollama.model}`, 'Ollama pull'));
+  $('ollama-pull').addEventListener('click', () => (S.up ? startPull(S.state.ollama.model) : openTerminal(`ollama pull ${S.state.ollama.model}`, 'Ollama pull')));
 
   // Library
   $('pick').addEventListener('click', () => $('files').click());
@@ -1452,6 +1555,7 @@ function wire() {
 
   // Settings
   $('settings-form').addEventListener('input', (e) => {
+    if (e.target.id === 'pull-name') return;
     e.currentTarget.dataset.dirty = '1';
     // A new model brings its own prefixes, as the engine sets them (defaultPrefixes in embed.js).
     if (e.target.name === 'embedModel') {
@@ -1464,6 +1568,12 @@ function wire() {
     try { await engine.json('POST', '/api/reembed'); $('stale-reembed').disabled = true; toast('Re-embedding - progress shows in the library.'); } catch (err) { toast(err.message, true); }
   });
   $('settings-form').addEventListener('submit', saveSettings);
+  $('pull-btn').addEventListener('click', () => startPull($('pull-name').value.trim()));
+  // Enter in the name downloads it; it does not save the form.
+  $('pull-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); startPull($('pull-name').value.trim()); } });
+  $('pull-cancel').addEventListener('click', async () => {
+    try { await engine.json('DELETE', '/api/ollama/pull'); } catch (e) { toast(e.message, true); }
+  });
   $('reembed').addEventListener('click', async () => {
     try { await engine.json('POST', '/api/reembed'); $('reembed').hidden = true; $('settings-msg').textContent = 'Re-embedding - progress shows in the library.'; } catch (e) { toast(e.message, true); }
   });

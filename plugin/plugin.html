@@ -173,7 +173,10 @@
       <label>Claude program <input name="claudePath" placeholder="found on PATH" spellcheck="false"></label>
       <label>Antigravity program <input name="agyPath" placeholder="found on PATH" spellcheck="false"></label>
       <h3>Embeddings</h3>
-      <label>Ollama model <input name="embedModel" spellcheck="false"></label>
+      <label>Ollama model <select name="embedModel"></select></label>
+      <label>Download a model <span class="row"><input id="pull-name" list="pull-suggest" placeholder="a model name, e.g. bge-m3" spellcheck="false" autocomplete="off"><button type="button" id="pull-btn">Download</button></span></label>
+      <datalist id="pull-suggest"></datalist>
+      <div class="pull" id="pull" hidden><progress id="pull-bar" max="1" value="0"></progress><span class="note" id="pull-msg"></span><button type="button" id="pull-cancel">Cancel</button></div>
       <label>Query prefix <input name="queryPrefix" placeholder="none" spellcheck="false"></label>
       <label>Document prefix <input name="docPrefix" placeholder="none" spellcheck="false"></label>
       <p class="note">Changing the model or the document prefix means every document must be embedded again before you can ask.</p>

@@ -308,6 +308,10 @@ table.docs { width: 100%; border-collapse: separate; border-spacing: 0; backgrou
 .state.ready { color: var(--green); }
 .state.error { color: var(--red); }
 progress { width: 120px; height: 6px; vertical-align: middle; accent-color: var(--accent); }
+/* A model downloading through Ollama, under the model choice. */
+.pull { display: flex; align-items: center; gap: 10px; margin-left: 180px; }
+.pull progress { flex: 1; width: auto; }
+.pull .note { white-space: nowrap; }
 
 .settings { overflow: auto; padding: 18px 20px; display: grid; grid-template-columns: minmax(0, 560px) minmax(0, 1fr); gap: 24px; align-content: start; }
 .form { display: flex; flex-direction: column; gap: 10px; }
@@ -433,4 +437,5 @@ label.check { display: flex; align-items: center; gap: 8px; }
   .ask .source { position: fixed; top: 10px; right: 10px; bottom: 10px; width: min(380px, calc(100% - 20px)); z-index: 15; }
   .settings { grid-template-columns: minmax(0, 1fr); }
   .form label { grid-template-columns: 1fr; gap: 4px; }
+  .pull { margin-left: 0; }
 }
