@@ -955,13 +955,14 @@ function renderModels() {
   f.embedModel.replaceChildren(...opts);
   const pick = list.find((x) => sameModel(x.name, chosen));
   f.embedModel.value = pick ? pick.name : chosen;
-  $('pull-suggest').replaceChildren(...(m ? m.suggested.filter((x) => !x.installed) : []).map((x) => {
+  // Every suggestion is offered (t-18f06b222f), the installed ones too: downloading one again fetches its update.
+  $('pull-suggest').replaceChildren(...(m ? m.suggested : []).map((x) => {
     const o = el('option');
     o.value = x.name;
-    o.label = x.note;
+    o.label = x.installed ? `${x.note} - installed` : x.note;
     return o;
   }));
-  $('pull-name').placeholder = S.models && S.models.error ? S.models.error : 'a model name, e.g. bge-m3';
+  $('pull-name').placeholder = S.models && S.models.error ? S.models.error : 'choose a suggested model, or type any name';
 }
 
 async function startPull(model) {

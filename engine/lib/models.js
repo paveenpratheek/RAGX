@@ -14,6 +14,7 @@ import { DEFAULT_MODEL } from './embed.js';
 
 export const SUGGESTED = [
   { name: DEFAULT_MODEL, note: 'the default: text and figures in one space' },
+  { name: 'embeddinggemma-2:740m', note: 'larger EmbeddingGemma: text and figures' },
   { name: 'nomic-embed-text-v2-moe', note: 'multilingual, text only' },
   { name: 'bge-m3', note: 'multilingual, text only' },
   { name: 'qwen3-embedding:0.6b', note: 'multilingual, text only' },
