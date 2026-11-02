@@ -928,6 +928,9 @@ function fmtBytes(n) {
   return n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${Math.round(n / 1e6)} MB`;
 }
 
+// 'bge-m3' and 'bge-m3:latest' are one model, as Ollama names them.
+const sameModel = (a, b) => (a.includes(':') ? a : a + ':latest') === (b.includes(':') ? b : b + ':latest');
+
 function renderModels() {
   const f = $('settings-form');
   const st = S.state;
@@ -936,7 +939,6 @@ function renderModels() {
   const chosen = f.dataset.dirty ? f.embedModel.value || current : current;
   const m = S.models && !S.models.error ? S.models : null;
   const list = m ? m.models.slice() : [];
-  const same = (a, b) => (a.includes(':') ? a : a + ':latest') === (b.includes(':') ? b : b + ':latest');
   const opts = list.map((x) => {
     const o = el('option', null, [x.name, fmtBytes(x.size), x.vision ? 'text and figures' : 'text only'].filter(Boolean).join(' · '));
     o.value = x.name;
@@ -944,14 +946,14 @@ function renderModels() {
   });
   // The setting stays listed when Ollama does not have it (or cannot be asked).
   for (const name of new Set([current, chosen])) {
-    if (!list.some((x) => same(x.name, name))) {
+    if (!list.some((x) => sameModel(x.name, name))) {
       const o = el('option', null, `${name} · ${m ? 'not downloaded' : 'Ollama not checked'}`);
       o.value = name;
       opts.unshift(o);
     }
   }
   f.embedModel.replaceChildren(...opts);
-  const pick = list.find((x) => same(x.name, chosen));
+  const pick = list.find((x) => sameModel(x.name, chosen));
   f.embedModel.value = pick ? pick.name : chosen;
   $('pull-suggest').replaceChildren(...(m ? m.suggested.filter((x) => !x.installed) : []).map((x) => {
     const o = el('option');
@@ -984,7 +986,7 @@ function renderPull(p, { quiet = false } = {}) {
       : `${p.model}: ${p.error}`;
   $('pull-msg').textContent = text;
   // The notice that asked for the model shows the same progress.
-  if (S.state && S.state.ollama && S.state.ollama.state === 'model-missing' && p.model === S.state.ollama.model && !p.done) {
+  if (S.state && S.state.ollama && S.state.ollama.state === 'model-missing' && sameModel(p.model, S.state.ollama.model) && !p.done) {
     $('ollama-msg').textContent = text;
     $('ollama-pull').hidden = true;
   }
@@ -998,11 +1000,13 @@ async function pullEvent(p) {
   if (!p.done) return;
   const f = $('settings-form');
   if (!p.ok) { toast(`${p.model}: ${p.error}`, p.error !== 'Cancelled.'); return; }
-  if (S.state && p.model === S.state.settings.model) { toast(`${p.model} is downloaded - documents can be read now.`); refresh(); loadModels(); return; }
+  if (S.state && sameModel(p.model, S.state.settings.model)) { toast(`${p.model} is downloaded - documents can be read now.`); refresh(); loadModels(); return; }
   await loadModels();
   if (p.embeds === false) return;
   f.dataset.dirty = '1';
-  f.embedModel.value = [...f.embedModel.options].some((o) => o.value === p.model) ? p.model : f.embedModel.value;
+  const got = [...f.embedModel.options].find((o) => sameModel(o.value, p.model));
+  if (!got) return;
+  f.embedModel.value = got.value;
   f.embedModel.dispatchEvent(new Event('input', { bubbles: true }));
   $('pull-name').value = '';
   $('settings-msg').textContent = `${p.model} is chosen. Press Save to use it - every document is then embedded again.`;
