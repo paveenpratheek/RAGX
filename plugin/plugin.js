@@ -977,6 +977,7 @@ function renderPull(p, { quiet = false } = {}) {
   if (!p || (p.done && quiet)) { box.hidden = true; return; }
   box.hidden = false;
   const bar = $('pull-bar');
+  bar.hidden = p.done;
   if (p.total) { bar.max = p.total; bar.value = p.completed; } else bar.removeAttribute('value');
   $('pull-cancel').hidden = p.done;
   $('pull-btn').disabled = !p.done;
@@ -1009,7 +1010,10 @@ async function pullEvent(p) {
   f.embedModel.value = got.value;
   f.embedModel.dispatchEvent(new Event('input', { bubbles: true }));
   $('pull-name').value = '';
-  $('settings-msg').textContent = `${p.model} is chosen. Press Save to use it - every document is then embedded again.`;
+  const said = `${p.model} is downloaded and chosen above. Press Save to use it - every document is then embedded again.`;
+  renderPull(p);
+  $('pull-msg').textContent = said;
+  $('settings-msg').textContent = said;
 }
 
 /* ------------------------------------------------------------- tracker */
