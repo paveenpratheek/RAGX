@@ -183,3 +183,39 @@ test('a failed reading never fails the document: its figures stay not read until
   const now = await e.readNow(r.doc.id);
   assert.deepEqual([now.read, now.unread, now.readError], [1, 0, null]);
 });
+
+/* Gemini through Antigravity as the reader (t-773bfd9026, t-23220d9414). */
+const GEMINI = (behaviour) => ({ executable: process.execPath, prefixArgs: [FAKE, 'agy', behaviour] });
+
+test('Gemini reads an image as a file in an empty folder of its own, locked down, and the reading is kept', async (t) => {
+  const { dir, store } = tempStore(t);
+  const png = Buffer.from('\x89PNG gemini test');
+  const g = { dataDir: dir, ...GEMINI('read') };
+  const r = await readImage(png, { store, model: 'gemini-3.8-flash-low', gemini: g });
+  assert.equal(r.cached, false);
+  assert.equal(r.kind, 'chart');
+  assert.match(r.description, /1 image given/, 'agy found the image file it was told to open');
+  const again = await readImage(png, { store, model: 'gemini-3.8-flash-low', gemini: g });
+  assert.equal(again.cached, true, 'kept by image and model');
+  assert.deepEqual(fs.readdirSync(path.join(dir, 'gemini-runs')), [], 'the work folder is removed');
+  // A Claude reading of the same picture is its own.
+  assert.equal(store.reading(imageKey(png), 'haiku'), null);
+
+  const { readWithGemini } = await import('../engine/lib/agents/gemini-read.js');
+  const e = JSON.parse((await readWithGemini({ png, system: READ_SYSTEM, prompt: 'Read this image.', model: 'gemini-3.8-flash-medium', dataDir: dir, ...GEMINI('echo') })).text);
+  const flag = (name) => e.flags[e.flags.indexOf(name) + 1];
+  assert.equal(flag('--model'), 'gemini-3.8-flash-medium');
+  assert.deepEqual(JSON.parse(flag('--settings')), { allowNonWorkspaceAccess: false, permissions: { deny: ['write_file(*)', 'command(*)', 'read_url(*)', 'execute_url(*)', 'mcp(*)'] } });
+  assert.equal(path.dirname(e.cwd), path.join(dir, 'gemini-runs'), 'run in a fresh folder of its own');
+  assert.equal(e.home, path.join(dir, 'gemini-home'), "none of the user's Antigravity settings load");
+  assert.deepEqual(e.keys, [], 'no API keys reach it');
+  assert.equal(e.images, 1);
+  assert.match(e.prompt, /Open it with view_file/);
+  assert.match(e.prompt, /exactly as written/);
+});
+
+test('a Gemini reader that is not signed in, or refuses, says so plainly', async (t) => {
+  const { dir, store } = tempStore(t);
+  await assert.rejects(readImage(Buffer.from('a'), { store, model: 'gemini-3.8-flash-low', gemini: { dataDir: dir, ...GEMINI('login') } }), (e) => e.code === 'not-logged-in' && /Antigravity is not signed in/.test(e.message));
+  await assert.rejects(readImage(Buffer.from('b'), { store, model: 'gemini-3.8-flash-low', gemini: { dataDir: dir, ...GEMINI('deny-always') } }), (e) => e.code === 'refused');
+});

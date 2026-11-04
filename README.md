@@ -73,7 +73,7 @@ flowchart LR
 
 **Library**
 - Add PDF, DOCX, Markdown, text and image files. A file named like an existing document can replace it as a new version.
-- Figures (charts, diagrams, pictures, scanned pages) are cropped, stored, read by Claude Haiku and searchable by description.
+- Figures (charts, diagrams, pictures, scanned pages) are cropped, stored, read by Claude Haiku (or a Gemini model through Antigravity) and searchable by description.
 - File Fabric canvases are kept apart from ordinary files. When a canvas is updated, only its changed places are re-embedded.
 - Files placed on a canvas come in as documents that remember where they sit, with an "On <canvas>" badge and their place shown in every source.
 - **Drops from NoteX's Inbox** (the gold layer of the medallion pipeline): each drop NoteX's agent placed on an agent canvas comes in as a document of its own, with its place and the time it was dropped. RAGX takes only files from NoteX's bronze whose bytes match the listed hash. A drop forgotten in NoteX leaves the library.
@@ -100,7 +100,7 @@ If the engine isn't running, the agent's call shows up as a request in the page'
 - Every call (from the page, an agent or the CLI) is recorded with its question, its results, and how long embedding, model loading, search and answering each took, plus what the GPU was doing. Updates live.
 
 **Settings**
-- Embedding model (any Ollama model; `reembed` rebuilds every vector), answering agent and model, figure reading on/off and its model.
+- Embedding model (any Ollama model; `reembed` rebuilds every vector), answering agent and model, figure reading on/off and its model - Claude haiku/sonnet/opus, or Gemini through Antigravity.
 
 ---
 

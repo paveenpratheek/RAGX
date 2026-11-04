@@ -75,7 +75,7 @@ export class Engine {
 
   /* figureFloor: how close a question must come to a figure - measured for
    * embeddinggemma-2 (t-525cbbd9a7); tests with a stand-in model lower it. */
-  constructor(dir, { makeEmbedder = (s) => new Embedder(s), figureFloor = FIGURE_FLOOR, readerOptions = {}, readCap = READ_CAP, readAtOnce = READ_AT_ONCE } = {}) {
+  constructor(dir, { makeEmbedder = (s) => new Embedder(s), figureFloor = FIGURE_FLOOR, readerOptions = {}, geminiOptions = {}, readCap = READ_CAP, readAtOnce = READ_AT_ONCE } = {}) {
     this.figureFloor = figureFloor;
     this.readCap = readCap;
     this.readAtOnce = readAtOnce;
@@ -84,6 +84,7 @@ export class Engine {
     this.reuseFor = new Map(); // document id -> its replaced version's vectors, while it is built
     // How Claude is run to read images; tests point it at a stand-in.
     this.readerOptions = readerOptions;
+    this.geminiOptions = geminiOptions; // tests give a stand-in agy here
     this.dir = dir;
     this.store = new Store(path.join(dir, 'rag.db'));
     // An index from before the size was kept per model measured it with the model set then.
@@ -115,10 +116,16 @@ export class Engine {
 
   settings() { return readSettings(this.store); }
 
-  /* Reading images with Claude: on unless turned off, Haiku unless named
-   * (t-d2b967c01a). */
+  /* Reading images: on unless turned off, Haiku unless another model is
+   * named - Claude's, or a Gemini model through Antigravity (t-d2b967c01a,
+   * t-773bfd9026). */
   readingSettings() {
     return { readFigures: this.store.getMeta('read_figures', 'on') !== 'off', readModel: this.store.getMeta('read_model', '') || READ_MODEL };
+  }
+
+  /* How a Gemini reading runs: in RAGX's own folders, with agy where Settings points. */
+  geminiReading() {
+    return { dataDir: this.dir, executable: this.store.getMeta('agy_path', '') || null, ...this.geminiOptions };
   }
 
   /* How chunks are sized for this document: from the model's window, less the
@@ -376,7 +383,7 @@ export class Engine {
           try {
             reading = await this.readGate.run(() => readImage(png, {
               store: this.store, model: readModel, cwd: agentFolder(this.dir), executable: exe, agentOptions: this.readerOptions, stats,
-              spare: this.spare, more: () => next < todo.length || this.readGate.waiting > 0,
+              spare: this.spare, more: () => next < todo.length || this.readGate.waiting > 0, gemini: this.geminiReading(),
             }));
           } catch (e) {
             if (!(e instanceof AgentError)) throw e;
@@ -429,7 +436,7 @@ export class Engine {
     if (kept) return { ...kept, model: readModel, cached: true };
     const r = await this.readGate.run(() => readImage(img.png, {
       store: this.store, model: readModel, cwd: agentFolder(this.dir), executable: exe, agentOptions: this.readerOptions, stats,
-      spare: this.spare, more: () => ahead > 0 || this.readGate.waiting > 0,
+      spare: this.spare, more: () => ahead > 0 || this.readGate.waiting > 0, gemini: this.geminiReading(),
     }));
     return { ...r, model: readModel };
   }

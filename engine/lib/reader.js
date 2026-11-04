@@ -14,14 +14,18 @@
  * Every reading is kept by the image's content and the reader model and
  * reused (t-c214262732): re-indexing rebuilds a document's figures, and would
  * otherwise pay for each one again. A reading is never resumed, so it keeps no
- * session in the user's Claude history (t-7ab84e8281). Claude only - agy's
- * image input is untested (t-97d52cf457).
+ * session in the user's Claude history (t-7ab84e8281). A Gemini model, read
+ * through Antigravity, can be the reader instead (t-773bfd9026).
  */
 import crypto from 'node:crypto';
 import * as claude from './agents/claude.js';
+import { readWithGemini, isGemini, GEMINI_MODELS } from './agents/gemini-read.js';
 import { extractText } from './extract/text.js';
 
 export const READ_MODEL = 'haiku';
+/* What Settings offers to read with: Claude's models, then Gemini's. */
+export const READ_MODELS = { claude: ['haiku', 'sonnet', 'opus'], gemini: GEMINI_MODELS };
+export { isGemini };
 const READ_TIMEOUT_MS = 120_000;
 
 /* Exact text kept apart from the description, since a model asked to read
@@ -119,7 +123,7 @@ export function parseReading(reply) {
  * decides what a failed reading means for the document (t-64a996ef5a).
  * spare and more(): the engine's spare reader is taken if it fits, and a new
  * one started while more() says other images are waiting. */
-export async function readImage(png, { store, model = READ_MODEL, cwd, executable = null, signal, agentOptions = {}, stats = null, spare = null, more = () => false }) {
+export async function readImage(png, { store, model = READ_MODEL, cwd, executable = null, signal, agentOptions = {}, stats = null, spare = null, more = () => false, gemini = null }) {
   const key = imageKey(png);
   const kept = store.reading(key, model);
   if (kept) {
@@ -127,6 +131,12 @@ export async function readImage(png, { store, model = READ_MODEL, cwd, executabl
     return { ...kept, cached: true };
   }
   const started = Date.now();
+  // Gemini: the image as a file in a folder of its own, no spare kept (t-23220d9414).
+  if (isGemini(model)) {
+    const g = gemini || {};
+    const r = await readWithGemini({ png, system: READ_SYSTEM, prompt: 'Read this image.', model, dataDir: g.dataDir, executable: g.executable || null, prefixArgs: g.prefixArgs || [], timeoutMs: g.timeoutMs || READ_TIMEOUT_MS, signal });
+    return keep(store, key, model, r.text, started, stats);
+  }
   const opts = { system: READ_SYSTEM, model, persist: false, cwd, executable, ...agentOptions };
   const how = JSON.stringify([model, cwd, executable, agentOptions.executable || null, agentOptions.prefixArgs || []]);
   const taken = spare ? spare.take(how) : null;
@@ -136,7 +146,12 @@ export async function readImage(png, { store, model = READ_MODEL, cwd, executabl
   const r = await claude.finish(run, {
     prompt: 'Read this image.', images: [{ label: 'The image:', png }], signal, timeoutMs: READ_TIMEOUT_MS, ...agentOptions,
   });
-  const reading = { ...parseReading(r.text), ms: Date.now() - started };
+  return keep(store, key, model, r.text, started, stats);
+}
+
+/* A reply kept as the image's reading for this model, and counted. */
+function keep(store, key, model, text, started, stats) {
+  const reading = { ...parseReading(text), ms: Date.now() - started };
   store.putReading(key, model, reading);
   if (stats) {
     stats.reads = (stats.reads || 0) + 1;

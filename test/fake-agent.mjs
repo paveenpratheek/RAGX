@@ -43,7 +43,10 @@ function turn(msg) {
   const blocks = protocol === 'claude' ? msg.message.content : [];
   const texts = blocks.filter((b) => b.type === 'text').map((b) => b.text);
   const prompt = protocol === 'claude' ? texts[texts.length - 1] : msg.message.content;
-  const images = blocks.filter((b) => b.type === 'image' && b.source && b.source.media_type === 'image/png' && b.source.data).length;
+  // agy takes no image blocks: an image is a file in its folder that the prompt names (t-23220d9414).
+  const images = protocol === 'claude'
+    ? blocks.filter((b) => b.type === 'image' && b.source && b.source.media_type === 'image/png' && b.source.data).length
+    : [...new Set(String(prompt).match(/image-\d+\.png/g) || [])].filter((n) => fs.existsSync(n)).length;
   const keys = ['ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY'].filter((k) => k in process.env);
   const flag = (name) => { const i = flags.indexOf(name); return i >= 0 ? flags[i + 1] : null; };
 
@@ -55,7 +58,7 @@ function turn(msg) {
   if (behaviour === 'hang') { hanging = setInterval(() => {}, 1000); return; }
 
   let answer = 'The vault code is 7741 [1].';
-  if (behaviour === 'echo') answer = JSON.stringify({ flags, cwd: process.cwd(), keys, prompt, images, labels: texts.slice(0, -1), pid: process.pid, turn: turnNo });
+  if (behaviour === 'echo') answer = JSON.stringify({ flags, cwd: process.cwd(), keys, prompt, images, labels: texts.slice(0, -1), pid: process.pid, turn: turnNo, home: process.env.USERPROFILE || process.env.HOME });
   if (behaviour === 'cite-unknown') answer = 'Rent is due monthly [1], and late fees apply [9].';
   // Reading an image: the JSON the reader asks for, saying what it was given.
   if (behaviour === 'read') answer = JSON.stringify({ kind: 'chart', text: 'Arm | Cost\nOpus | $5.03\nHaiku | $0.07', description: `A bar chart of reader cost; ${images} image given; flags ${flags.filter((f) => f.startsWith('--no-')).join(' ')}.` });

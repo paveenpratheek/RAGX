@@ -275,7 +275,7 @@ function statusCell(d) {
     if (p.phase === 'embedding' && p.total) {
       td.appendChild(el('span', 'state', `embedding ${p.done}/${p.total} `));
       const bar = el('progress'); bar.max = p.total; bar.value = p.done; td.appendChild(bar);
-    } else if (p.phase === 'reading' && p.total) td.appendChild(el('span', 'state', `Claude reading figures ${p.done}/${p.total}`));
+    } else if (p.phase === 'reading' && p.total) td.appendChild(el('span', 'state', `${reader().name} reading figures ${p.done}/${p.total}`));
     else td.appendChild(el('span', 'state', p.phase === 'extracting' ? 'reading…' : `${p.phase}…`));
     return td;
   }
@@ -305,7 +305,7 @@ function docRow(d) {
   // Figures, and how many Claude has read: "14/16 read" (t-79cb1dcd37).
   const unread = (d.figures || 0) - (d.figures_read || 0);
   const figs = el('td', 'num', d.figures ? (unread ? `${d.figures_read || 0}/${d.figures} read` : String(d.figures)) : '');
-  if (unread) figs.title = `${unread} figure${unread === 1 ? '' : 's'} not read by Claude yet`;
+  if (unread) figs.title = `${unread} figure${unread === 1 ? '' : 's'} not read yet`;
   tr.append(name, statusCell(d), el('td', 'num', String(d.chunks || '')), figs, el('td', 'num', d.pages ? String(d.pages) : ''));
   const acts = el('td', 'acts');
   if (unread && d.status === 'ready') { const rd = el('button', null, 'Read figures'); rd.dataset.act = 'read'; acts.appendChild(rd); }
@@ -321,12 +321,21 @@ function docRow(d) {
  * t-f0fbeabf6b). */
 function renderReading() {
   const on = !S.state || !S.state.settings || S.state.settings.readFigures !== false;
+  const r = reader();
   $('read-notice').textContent = on
-    ? 'Figures and scanned pages in new documents are read by Claude - each image is sent to Anthropic once. Turn this off in Settings.'
-    : 'Claude does not read figures in new documents; turn it on in Settings.';
+    ? `Figures and scanned pages in new documents are read by ${r.name} - each image is sent to ${r.vendor} once. Turn this off in Settings.`
+    : `${r.name} does not read figures in new documents; turn it on in Settings.`;
   const unread = [...S.docs.values()].reduce((n, d) => n + Math.max(0, (d.figures || 0) - (d.figures_read || 0)), 0);
   $('unread').hidden = !unread;
-  $('unread-msg').textContent = `${unread} figure${unread === 1 ? ' is' : 's are'} not read by Claude yet, so the words and numbers in ${unread === 1 ? 'it' : 'them'} cannot be searched.`;
+  $('unread-msg').textContent = `${unread} figure${unread === 1 ? ' is' : 's are'} not read yet, so the words and numbers in ${unread === 1 ? 'it' : 'them'} cannot be searched.`;
+}
+
+/* Who reads images, from the Reader model setting: Claude, or Gemini
+ * through Antigravity (t-773bfd9026). */
+function reader(model = S.state && S.state.settings && S.state.settings.readModel) {
+  return /^gemini-/i.test(String(model || ''))
+    ? { name: 'Gemini', vendor: 'Google', via: 'your Antigravity sign-in' }
+    : { name: 'Claude', vendor: 'Anthropic', via: 'your Claude subscription' };
 }
 
 /* The filter: all documents, the ones the user added, or File Fabric's
@@ -499,7 +508,7 @@ function figureBox(id, caption, n = null, reading = null) {
   // What Claude read in it, under the image and marked as such - the image is the authority (t-8be56aa93b).
   if (reading) {
     const r = el('div', 'reading');
-    r.append(el('div', 'reading-label', 'Read from the image by Claude - machine-read, may contain errors'), el('div', 'reading-text', reading));
+    r.append(el('div', 'reading-label', 'Read from the image - machine-read, may contain errors'), el('div', 'reading-text', reading));
     box.appendChild(r);
   }
   engine.figureUrl(id).then((url) => { img.src = url; }).catch(() => box.replaceChildren(el('div', 'note', 'The figure could not be loaded - its document may have been removed.')));
@@ -865,7 +874,7 @@ function renderSettings() {
     f.queryPrefix.value = s.queryPrefix || '';
     f.docPrefix.value = s.docPrefix || '';
     f.readFigures.checked = s.readFigures !== false;
-    f.readModel.value = s.readModel || '';
+    fillReaders(f.readModel, s);
     f.imageFolders.value = (s.imageFolders || []).join('\n');
     f.notexDocs.value = s.notexDocsSet || '';
     f.notexDocs.placeholder = s.notexDocs || f.notexDocs.placeholder;
@@ -887,6 +896,29 @@ function renderSettings() {
   renderAgent();
 }
 
+/* The Reader model list, in two groups, the setting chosen; a model named
+ * some other way (the command line) stays listed. */
+function fillReaders(sel, s) {
+  const lists = s.readModels || { claude: ['haiku', 'sonnet', 'opus'], gemini: [] };
+  const current = s.readModel || 'haiku';
+  const group = (label, names) => {
+    const g = el('optgroup');
+    g.label = label;
+    for (const n of names) { const o = el('option', null, n === 'haiku' ? 'haiku (default)' : n); o.value = n; g.append(o); }
+    return g;
+  };
+  const groups = [group('Claude', lists.claude), group('Gemini, through Antigravity', lists.gemini)];
+  if (![...lists.claude, ...lists.gemini].includes(current)) groups.unshift(group('Set elsewhere', [current]));
+  sel.replaceChildren(...groups.filter((g) => g.children.length));
+  sel.value = current;
+  noteReader(current);
+}
+
+function noteReader(model) {
+  const r = reader(model);
+  $('read-note').textContent = `Each figure and scanned page of a new document is sent to ${r.vendor} once, through ${r.via}, and ${r.name} writes out its text and what it shows, so the words and numbers in images can be searched. Readings are kept, so an image is never read twice by the same model. Documents already in the library are read only when you press Read figures now, at most 50 images at a time.`;
+}
+
 async function saveSettings(ev) {
   ev.preventDefault();
   const f = ev.target;
@@ -894,7 +926,7 @@ async function saveSettings(ev) {
   const body = {
     claudeModel: f.claudeModel.value, agyModel: f.agyModel.value.trim(),
     claudePath: f.claudePath.value.trim(), agyPath: f.agyPath.value.trim(),
-    readFigures: f.readFigures.checked, readModel: f.readModel.value.trim(),
+    readFigures: f.readFigures.checked, readModel: f.readModel.value,
     imageFolders: f.imageFolders.value.split('\n').map((x) => x.trim()).filter(Boolean),
     notexDocs: f.notexDocs.value.trim(),
   };
@@ -1056,7 +1088,7 @@ function timebar(c) {
     if (!ms) continue;
     const i = el('i', cls);
     i.style.width = `${Math.min(100, (ms / total) * 100)}%`;
-    i.title = `${{ load: 'loading the model', embed: 'embedding text', image: 'embedding figures', read: 'Claude reading figures', search: 'searching', agent: 'the agent answering' }[cls]}: ${fmtMs(ms)}`;
+    i.title = `${{ load: 'loading the model', embed: 'embedding text', image: 'embedding figures', read: 'reading figures', search: 'searching', agent: 'the agent answering' }[cls]}: ${fmtMs(ms)}`;
     bar.appendChild(i);
   }
   return bar;
@@ -1107,7 +1139,7 @@ function renderCards(sum) {
     stat('Calls', String(calls), split || 'none yet'),
     stat('Time per call', calls ? fmtMs(avg) : '-', calls ? `slowest ${fmtMs(slowest)}` : null),
     stat('Embedding', fmtMs(sum.embedMs + (sum.imageMs || 0)), [sum.imageMs ? `${fmtMs(sum.imageMs)} of it figures` : '', sum.loadMs ? `${fmtMs(sum.loadMs)} loading the model` : 'model was already loaded'].filter(Boolean).join(' · ')),
-    stat('Figures read', String(sum.reads || 0), sum.reads || sum.readCached ? `${fmtMs(sum.readMs || 0)} reading${sum.readCached ? ` · ${sum.readCached} from kept readings` : ''}` : 'by Claude, when documents are added'),
+    stat('Figures read', String(sum.reads || 0), sum.reads || sum.readCached ? `${fmtMs(sum.readMs || 0)} reading${sum.readCached ? ` · ${sum.readCached} from kept readings` : ''}` : 'when documents are added'),
     stat('Model loads', String(sum.loads), `loaded for ${loaded >= 3600 ? (loaded / 3600).toFixed(1) + ' h' : Math.round(loaded / 60) + ' min'}`),
     stat('GPU now', now && now.gpuUtil != null ? `${now.gpuUtil}%` : '-',
       now && now.vramUsed != null ? `VRAM ${now.vramUsed} / ${now.vramTotal} MiB` : 'no NVIDIA GPU found'),
@@ -1245,7 +1277,7 @@ async function openCall(id) {
   row('Embedding', c.embed_ms != null ? fmtMs(c.embed_ms) : null);
   row('Embedding figures', c.image_ms ? fmtMs(c.image_ms) : null);
   row('Reading figures', c.read_ms || c.reads || c.read_cached
-    ? `${c.reads || 0} read by Claude${c.read_cached ? `, ${c.read_cached} from kept readings` : ''}${c.read_ms ? ` - ${fmtMs(c.read_ms)}` : ''}` : null);
+    ? `${c.reads || 0} read${c.read_cached ? `, ${c.read_cached} from kept readings` : ''}${c.read_ms ? ` - ${fmtMs(c.read_ms)}` : ''}` : null);
   row('Figures', c.detail && c.detail.figures ? String(c.detail.figures) : null);
   row('Loading the model', c.load_ms ? fmtMs(c.load_ms) : null);
   row('Search', c.search_ms != null ? fmtMs(c.search_ms) : null);
@@ -1567,6 +1599,7 @@ function wire() {
     if (e.target.id === 'pull-name') return;
     e.currentTarget.dataset.dirty = '1';
     // A new model brings its own prefixes, as the engine sets them (defaultPrefixes in embed.js).
+    if (e.target.name === 'readModel') noteReader(e.target.value);
     if (e.target.name === 'embedModel') {
       const gemma = /^embeddinggemma/i.test(e.target.value.trim());
       e.currentTarget.queryPrefix.value = gemma ? 'task: search result | query: ' : '';

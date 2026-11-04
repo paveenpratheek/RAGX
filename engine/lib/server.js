@@ -35,6 +35,7 @@ import { AgySession } from './agents/agy.js';
 import { AgentPool } from './agents/pool.js';
 import { takeLock, agentRecord, endOrphans, writeRuntime, writeLocal } from './lifecycle.js';
 import { OllamaControl } from './ollama.js';
+import { READ_MODELS } from './reader.js';
 import { listModels, canEmbed, ModelPull, ModelError, SUGGESTED, sameModel } from './models.js';
 import { Tracker, modelReader } from './tracker.js';
 import { IMAGE_TYPES, SUPPORTED } from './extract/index.js';
@@ -337,6 +338,7 @@ export async function startServer({
     claudePath: engine.store.getMeta('claude_path', '') || null,
     agyPath: engine.store.getMeta('agy_path', '') || null,
     ...engine.readingSettings(),
+    readModels: READ_MODELS, // Claude's and Gemini's, for the Reader model list (t-773bfd9026)
   });
 
   const inflight = new Set(); // AbortControllers of answers being streamed
