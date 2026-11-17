@@ -439,3 +439,103 @@ label.check { display: flex; align-items: center; gap: 8px; }
   .form label { grid-template-columns: 1fr; gap: 4px; }
   .pull { margin-left: 0; }
 }
+
+/* ------------------------------------------------------------------
+ * Inside CanvasX Studio (t-9450c1a1cb): AutomatU's look - flat white
+ * sheets with hairlines, a crumb over a serif title, the sections as a
+ * light sidebar, answers set in Source Serif 4 with plain numbered
+ * citations, near-black buttons. Only when the studio's host marks the
+ * page data-host="canvasx-studio"; ter-manager never does, so there the
+ * glass above is all there is. The palette is the host's.
+ * ------------------------------------------------------------------ */
+:root[data-host="canvasx-studio"] {
+  --sheet: var(--raise); --bar: transparent; --card: var(--raise); --well: color-mix(in srgb, var(--fg) 3%, var(--raise));
+  --chip: color-mix(in srgb, var(--fg) 5%, var(--raise)); --head: transparent;
+  --rim: transparent; --sheen: transparent; --sheen-soft: transparent; --spec: transparent; --lift: none; --drop: none;
+  --line: color-mix(in srgb, var(--fg) 9%, transparent);
+  --acc-soft: color-mix(in srgb, var(--fg) 8%, transparent); --acc-shadow: transparent;
+  --paper-2: color-mix(in srgb, var(--fg) 2%, var(--raise));
+  --x-sans: Geist, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --x-serif: "Source Serif 4", Georgia, serif;
+  --r-sheet: 18px;
+}
+:root[data-host="canvasx-studio"] body { background: var(--raise); background-image: none; padding: 24px 28px 28px; gap: 18px; font-family: var(--x-sans); }
+:root[data-host="canvasx-studio"] .bar,
+:root[data-host="canvasx-studio"] .composer,
+:root[data-host="canvasx-studio"] .side,
+:root[data-host="canvasx-studio"] .chat,
+:root[data-host="canvasx-studio"] .source,
+:root[data-host="canvasx-studio"] .library,
+:root[data-host="canvasx-studio"] .settings,
+:root[data-host="canvasx-studio"] .tracker,
+:root[data-host="canvasx-studio"] .notifications,
+:root[data-host="canvasx-studio"] .center > .card,
+:root[data-host="canvasx-studio"] .notice { -webkit-backdrop-filter: none; backdrop-filter: none; box-shadow: none; }
+:root[data-host="canvasx-studio"] .chat,
+:root[data-host="canvasx-studio"] .source,
+:root[data-host="canvasx-studio"] .library,
+:root[data-host="canvasx-studio"] .settings,
+:root[data-host="canvasx-studio"] .tracker,
+:root[data-host="canvasx-studio"] .notifications,
+:root[data-host="canvasx-studio"] .center > .card { background: var(--raise); border: 1px solid var(--line); }
+
+/* The head: a crumb over a serif title. */
+:root[data-host="canvasx-studio"] .bar { background: none; border: 0; padding: 0; min-height: 0; align-items: flex-end; gap: 14px; }
+:root[data-host="canvasx-studio"] .brand { flex-direction: column; align-items: flex-start; gap: 4px; }
+:root[data-host="canvasx-studio"] .brand .mark { display: none; }
+:root[data-host="canvasx-studio"] .tag { order: -1; padding: 0; background: none; color: var(--muted); font-size: 13px; font-weight: 400; }
+:root[data-host="canvasx-studio"] .brand strong { font: 400 32px/1.15 var(--x-serif); letter-spacing: -0.01em; }
+:root[data-host="canvasx-studio"] .pill { background: none; border: 0; box-shadow: none; }
+:root[data-host="canvasx-studio"] .seg { background: var(--chip); border: 0; border-radius: 12px; padding: 4px; }
+:root[data-host="canvasx-studio"] .seg button { border-radius: 9px; min-height: 32px; padding: 0 14px; }
+:root[data-host="canvasx-studio"] .seg button[aria-checked="true"] { background: var(--raise); color: var(--fg); font-weight: 500; box-shadow: 0 1px 2px rgba(0, 0, 0, .06); }
+:root[data-host="canvasx-studio"] .agent select { background: var(--raise); box-shadow: none; font-weight: 500; }
+
+/* Buttons and fields. */
+:root[data-host="canvasx-studio"] button { background: var(--raise); border-color: var(--line); border-radius: 10px; box-shadow: none; }
+:root[data-host="canvasx-studio"] button:hover { background: var(--chip); border-color: var(--line); }
+:root[data-host="canvasx-studio"] button.primary { background: var(--accent); color: var(--on-acc); border-color: transparent; font-weight: 500; box-shadow: none; }
+:root[data-host="canvasx-studio"] button.primary:hover { opacity: .88; background: var(--accent); }
+:root[data-host="canvasx-studio"] input, :root[data-host="canvasx-studio"] select, :root[data-host="canvasx-studio"] textarea { background: var(--raise); box-shadow: none; }
+:root[data-host="canvasx-studio"] input:focus, :root[data-host="canvasx-studio"] select:focus, :root[data-host="canvasx-studio"] textarea:focus { border-color: var(--fg); outline-color: var(--chip); }
+:root[data-host="canvasx-studio"] .eyebrow { font-size: 12px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--muted); }
+:root[data-host="canvasx-studio"] .chip { background: var(--chip); color: var(--fg-2); }
+
+/* The sections, as a light sidebar. */
+:root[data-host="canvasx-studio"] .side { background: var(--paper-2); border: 1px solid var(--line); padding: 12px; }
+:root[data-host="canvasx-studio"] .tabs button { border-radius: 10px; padding: 8px 10px; font-weight: 400; color: var(--fg-2); }
+:root[data-host="canvasx-studio"] .tabs button:hover { background: var(--chip); }
+:root[data-host="canvasx-studio"] .tabs button[aria-selected="true"] { background: color-mix(in srgb, var(--fg) 8%, var(--raise)); color: var(--fg); font-weight: 500; box-shadow: none; }
+:root[data-host="canvasx-studio"] .tabs button[aria-selected="true"] svg { color: var(--fg); }
+:root[data-host="canvasx-studio"] .list li { border-radius: 10px; }
+:root[data-host="canvasx-studio"] .list li.on { background: color-mix(in srgb, var(--fg) 8%, var(--raise)); box-shadow: none; font-weight: 500; }
+:root[data-host="canvasx-studio"] .list li.on .who { color: var(--fg-2); background: var(--chip); }
+
+/* Ask: the question in a soft bubble, the answer read like a page. */
+:root[data-host="canvasx-studio"] .panel-head { background: none; }
+:root[data-host="canvasx-studio"] .empty h2 { font: 400 26px/1.25 var(--x-serif); }
+:root[data-host="canvasx-studio"] .msg.user { background: var(--chip); color: var(--fg); box-shadow: none; border-radius: 18px; }
+:root[data-host="canvasx-studio"] .msg.bot { background: none; border: 0; box-shadow: none; padding: 4px 2px; }
+:root[data-host="canvasx-studio"] .msg.bot .body { font-family: var(--x-serif); font-size: 17px; line-height: 1.6; }
+:root[data-host="canvasx-studio"] .msg.bot .body code, :root[data-host="canvasx-studio"] .msg.bot .body pre { font-family: var(--mono-font); }
+:root[data-host="canvasx-studio"] button.cite { font-family: var(--x-sans); background: var(--chip); color: var(--fg); border-radius: 11px; padding: 3px 7px; }
+:root[data-host="canvasx-studio"] button.cite:hover { background: var(--fg); color: var(--raise); }
+:root[data-host="canvasx-studio"] .srcref { background: var(--raise); border-radius: 10px; }
+:root[data-host="canvasx-studio"] .working::before { background: var(--fg); }
+:root[data-host="canvasx-studio"] .composer { background: var(--raise); border: 1px solid var(--line); border-radius: 20px; box-shadow: 0 6px 18px rgba(31, 30, 29, .05); }
+:root[data-host="canvasx-studio"] .composer textarea { border: 0; }
+:root[data-host="canvasx-studio"] .composer #send { border-radius: 18px; }
+:root[data-host="canvasx-studio"] .scope-btn { background: var(--chip); border-radius: 999px; font-weight: 500; }
+:root[data-host="canvasx-studio"] .scope-btn.narrowed { color: var(--fg); border-color: var(--fg); background: var(--chip); }
+:root[data-host="canvasx-studio"] .source-body { font-family: var(--x-serif); font-size: 15px; }
+:root[data-host="canvasx-studio"] .source-body mark { background: var(--chip); }
+
+/* The library: a dashed drop area, a plain table. */
+:root[data-host="canvasx-studio"] .drop { background: var(--paper-2); border-radius: 18px; }
+:root[data-host="canvasx-studio"] .drop.over { border-color: var(--fg); background: var(--chip); }
+:root[data-host="canvasx-studio"] table.docs { border-radius: 18px; box-shadow: none; }
+:root[data-host="canvasx-studio"] .docs th { font-weight: 400; font-size: 12px; letter-spacing: 0; text-transform: none; }
+:root[data-host="canvasx-studio"] .notice { background: color-mix(in srgb, var(--yellow) 10%, var(--raise)); border-color: color-mix(in srgb, var(--yellow) 30%, transparent); }
+@media (max-width: 900px) { :root[data-host="canvasx-studio"] body { padding: 16px; } }
+/* Rows, tabs and segments stay plain; only real buttons take the hairline. */
+:root[data-host="canvasx-studio"] .seg button, :root[data-host="canvasx-studio"] .tabs button, :root[data-host="canvasx-studio"] .popover button, :root[data-host="canvasx-studio"] button.icon, :root[data-host="canvasx-studio"] button.link, :root[data-host="canvasx-studio"] .list .del { background: transparent; border-color: transparent; }
