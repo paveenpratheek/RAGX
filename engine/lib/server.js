@@ -45,7 +45,9 @@ import { place as placeCard, PlaceError } from './place.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const VERSION = JSON.parse(fs.readFileSync(path.join(HERE, '..', '..', 'package.json'), 'utf8')).version;
 export const DEFAULT_PORT = 7780;
-export const DEFAULT_ORIGINS = ['http://127.0.0.1:7070', 'http://localhost:7070'];
+// ter-manager's page (7070), and CanvasX Studio's (7075), which uses this engine
+// when ter-manager started it: one engine for both, however it was started (t-33efee41a1).
+export const DEFAULT_ORIGINS = ['http://127.0.0.1:7070', 'http://localhost:7070', 'http://127.0.0.1:7075', 'http://localhost:7075'];
 export const DEFAULT_RUNTIME = path.join(HERE, '..', '..', 'plugin', 'runtime.json');
 const MAX_JSON = 1024 * 1024;
 const MAX_UPLOAD = 200 * 1024 * 1024;

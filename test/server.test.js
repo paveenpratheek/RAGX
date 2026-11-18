@@ -102,13 +102,16 @@ test('requests without the token, from another origin or another host are refuse
   assert.equal(ok.headers.get('access-control-allow-origin'), ORIGIN);
 });
 
-test("only ter-manager's origin passes the preflight", async (t) => {
+test("only ter-manager's and CanvasX Studio's origins pass the preflight (t-33efee41a1)", async (t) => {
   const { s } = await serve(t);
   const pre = (origin) => fetch(s.url + '/api/ask', { method: 'OPTIONS', headers: { origin, 'access-control-request-method': 'POST', 'access-control-request-headers': 'x-rag-token' } });
   const good = await pre(ORIGIN);
   assert.equal(good.status, 204);
   assert.match(good.headers.get('access-control-allow-headers'), /X-Rag-Token/);
   assert.equal(good.headers.get('access-control-allow-origin'), ORIGIN);
+  for (const studio of ['http://127.0.0.1:7075', 'http://localhost:7075']) {
+    assert.equal((await pre(studio)).headers.get('access-control-allow-origin'), studio);
+  }
   assert.equal((await pre('http://localhost:5173')).status, 403);
 });
 
