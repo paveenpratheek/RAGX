@@ -97,3 +97,21 @@ test('keyword search ignores documents that are not ready', (t) => {
   s.replaceChunks(id, [{ text: 'halfway through ingesting' }]);
   assert.equal(s.keywordSearch('"ingesting"', 5).length, 0);
 });
+
+test('a pinned conversation is listed first, in the order pinned, and keeps its place when pinned again (t-f7bc850925)', (t) => {
+  const store = tempStore(t);
+  store.addConversation({ agent: 'claude', title: 'a' });
+  const b = store.addConversation({ agent: 'claude', title: 'b' });
+  const c = store.addConversation({ agent: 'claude', title: 'c' });
+  assert.ok(store.pin(b, true).pinned_at);
+  store.pin(c, true);
+  assert.deepEqual(store.conversations().map((x) => x.title), ['b', 'c', 'a']);
+  const at = store.conversation(b).pinned_at;
+  store.pin(b, true);
+  assert.equal(store.conversation(b).pinned_at, at);
+  assert.equal(store.pin(b, false).pinned_at, null);
+  const after = store.conversations().map((x) => x.title);
+  assert.equal(after[0], 'c');
+  assert.deepEqual(after.slice(1).sort(), ['a', 'b']);
+  assert.equal(store.pin(9999, true), null);
+});

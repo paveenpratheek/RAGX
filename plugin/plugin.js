@@ -238,6 +238,9 @@ function onEvent(e) {
     case 'pool':
       renderPool(e.pool);
       break;
+    case 'conversations': // pinned, unpinned or deleted, here or in another page (t-f7bc850925)
+      loadConversations();
+      break;
     case 'ollama': // the engine finished starting (or finding) Ollama
       refresh();
       if (S.tab === 'settings') loadModels();
@@ -693,13 +696,52 @@ async function ask(question) {
   }
 }
 
+/* A conversation pinned to the sidebar: kept by the engine, so ter-manager's
+ * page and CanvasX Studio's sidebar show the same pins (t-f7bc850925). */
+const PIN_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4h6l-1 6 4 4H6l4-4z"/><path d="M12 14v6"/></svg>';
+let convMenu = null;
+function closeConvMenu() { if (convMenu) { convMenu.remove(); convMenu = null; } }
+function openConvMenu(li, x, y) {
+  closeConvMenu();
+  const id = Number(li.dataset.id);
+  const pinned = li.dataset.pinned === '1';
+  const menu = el('div', 'popover conv-menu');
+  menu.setAttribute('role', 'menu');
+  const item = (text, fn, cls) => {
+    const b = el('button', cls || null, text);
+    b.type = 'button';
+    b.setAttribute('role', 'menuitem');
+    b.addEventListener('click', () => { closeConvMenu(); fn(); });
+    menu.append(b);
+    return b;
+  };
+  item(pinned ? 'Unpin from the sidebar' : 'Pin to the sidebar', () => pinConversation(id, !pinned));
+  item('Open', () => { if (!S.asking) openConversation(id); });
+  item('Delete', () => deleteConversation(id), 'danger');
+  document.body.append(menu);
+  const r = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(4, Math.min(x, innerWidth - r.width - 4))}px`;
+  menu.style.top = `${Math.max(4, Math.min(y, innerHeight - r.height - 4))}px`;
+  convMenu = menu;
+  menu.querySelector('button').focus();
+}
+async function pinConversation(id, pinned) {
+  try { await engine.json('PUT', `/api/conversations/${id}/pin`, { body: { pinned } }); loadConversations(); toast(pinned ? 'Pinned to the sidebar.' : 'Unpinned.'); } catch (err) { toast(err.message, true); }
+}
+async function deleteConversation(id) {
+  if (!confirm('Delete this conversation and its answers?')) return;
+  try { await engine.json('DELETE', `/api/conversations/${id}`); if (S.conv === id) newConversation(); loadConversations(); } catch (err) { toast(err.message, true); }
+}
+
 async function loadConversations() {
   try {
     const { conversations } = await engine.json('GET', '/api/conversations');
     const list = $('conv-list');
-    list.replaceChildren(...conversations.map((c) => {
-      const li = el('li', c.id === S.conv ? 'on' : null);
+    const last = conversations.filter((c) => c.pinned_at).length - 1;
+    list.replaceChildren(...conversations.map((c, i) => {
+      const li = el('li', [c.id === S.conv ? 'on' : '', c.pinned_at ? 'pinned' : '', i === last ? 'pin-end' : ''].filter(Boolean).join(' ') || null);
       li.dataset.id = String(c.id);
+      if (c.pinned_at) { li.dataset.pinned = '1'; const pin = el('span', 'pin-mark'); pin.innerHTML = PIN_SVG; pin.title = 'Pinned to the sidebar'; li.append(pin); }
       li.append(el('span', 'title', c.title), el('span', 'who', c.agent === 'agy' ? 'agy' : 'claude'));
       const del = el('button', 'icon del', '×'); del.title = 'Delete this conversation'; del.dataset.act = 'delete';
       li.appendChild(del);
@@ -1559,13 +1601,19 @@ function wire() {
     const li = e.target.closest('li[data-id]');
     if (!li) return;
     const id = Number(li.dataset.id);
-    if (e.target.closest('button[data-act="delete"]')) {
-      if (!confirm('Delete this conversation and its answers?')) return;
-      try { await engine.json('DELETE', `/api/conversations/${id}`); if (S.conv === id) newConversation(); loadConversations(); } catch (err) { toast(err.message, true); }
-      return;
-    }
+    if (e.target.closest('button[data-act="delete"]')) { deleteConversation(id); return; }
     if (!S.asking) openConversation(id);
   });
+  $('conv-list').addEventListener('contextmenu', (e) => {
+    const li = e.target.closest('li[data-id]');
+    if (!li) return;
+    e.preventDefault();
+    openConvMenu(li, e.clientX, e.clientY);
+  });
+  document.addEventListener('pointerdown', (e) => { if (convMenu && !convMenu.contains(e.target)) closeConvMenu(); }, true);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeConvMenu(); });
+  window.addEventListener('blur', closeConvMenu);
+  window.addEventListener('resize', closeConvMenu);
   $('thread').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-n]');
     if (b) openSource(Number(b.dataset.n));
@@ -1638,6 +1686,10 @@ async function boot() {
   }
   renderAgent();
   showTab(S.tab);
+  // CanvasX Studio's sidebar opens a pinned conversation here (t-f7bc850925); ter-manager has no such event.
+  if (TM && typeof TM.on === 'function') {
+    TM.on('open', (d) => { const id = Number(d && d.conversation); if (id > 0 && !S.asking) { showTab('ask'); openConversation(id); } });
+  }
   await refresh();
   if (S.up) {
     const conv = await recall('conv', null);

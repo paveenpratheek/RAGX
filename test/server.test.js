@@ -127,7 +127,7 @@ test('an upload keeps its name, is queued and ingested, and progress streams as 
   assert.equal(docs[0].source_path, null, 'an upload has no source path');
 });
 
-test('a job joining the queue is announced, and a deleted conversation is gone', async (t) => {
+test('a job joining the queue is announced, a conversation is pinned and unpinned, and a deleted one is gone', async (t) => {
   const { root, call } = await serve(t);
   const f = path.join(root, 'notes.txt');
   fs.writeFileSync(f, 'Invoice INV-2024-0042 was paid by transfer.');
@@ -138,6 +138,18 @@ test('a job joining the queue is announced, and a deleted conversation is gone',
   assert.ok(await queued);
   await ready;
   const done = (await lines(await call('/api/ask', { method: 'POST', body: { question: 'Invoice?', agent: 'claude' } }))).pop();
+  // Pinned to the sidebar, which every open page hears of (t-f7bc850925).
+  const pin = (body, id = done.conversationId) => call(`/api/conversations/${id}/pin`, { method: 'PUT', body });
+  const told = waitFor(call, (e) => e.type === 'conversations');
+  await told.connected;
+  const pinned = await pin({ pinned: true });
+  assert.equal(pinned.status, 200);
+  assert.ok((await pinned.json()).conversation.pinned_at);
+  assert.ok(await told);
+  assert.ok((await (await call('/api/conversations')).json()).conversations[0].pinned_at);
+  assert.equal((await pin({ pinned: 'yes' })).status, 400);
+  assert.equal((await pin({ pinned: true }, 9999)).status, 404);
+  assert.equal((await (await pin({ pinned: false })).json()).conversation.pinned_at, null);
   assert.equal((await call(`/api/conversations/${done.conversationId}`, { method: 'DELETE' })).status, 200);
   assert.equal((await call(`/api/conversations/${done.conversationId}`)).status, 404);
 });

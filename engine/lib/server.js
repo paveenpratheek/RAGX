@@ -622,6 +622,17 @@ export async function startServer({
       return json(200, { conversation: c, messages: engine.store.messages(id), sources: engine.store.sources(id), open: pool.live().has(id) });
     }
 
+    // Pinned to the sidebar of the pages that show RAGX (t-f7bc850925).
+    if ((p = m('PUT', /^\/api\/conversations\/(\d+)\/pin$/))) {
+      const id = Number(p[0]);
+      const b = await readJson(req);
+      if (typeof b.pinned !== 'boolean') throw new HttpError(400, 'bad-pin', 'pinned must be true or false.');
+      const c = engine.store.pin(id, b.pinned);
+      if (!c) throw new HttpError(404, 'not-found', `No conversation ${id}.`);
+      emit({ type: 'conversations' });
+      return json(200, { conversation: c });
+    }
+
     if ((p = m('DELETE', /^\/api\/conversations\/(\d+)$/))) {
       const id = Number(p[0]);
       if (!engine.store.conversation(id)) throw new HttpError(404, 'not-found', `No conversation ${id}.`);
@@ -629,6 +640,7 @@ export async function startServer({
       if (open) { if (open.busy) throw new HttpError(409, 'busy', 'This conversation is still answering.'); pool.sessions.delete(id); await open.close(); }
       engine.store.deleteConversation(id);
       emit({ type: 'pool', pool: pool.list() });
+      emit({ type: 'conversations' });
       return json(200, { removed: id });
     }
 

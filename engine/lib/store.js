@@ -95,8 +95,10 @@ export class Store {
                         (select count(*) from figure_vectors) figure_vectors`),
       addConversation: p('insert into conversations (agent, model, title, created_at, updated_at) values (?, ?, ?, ?, ?)'),
       conversation: p('select * from conversations where id = ?'),
+      // Pinned first, in the order they were pinned; then the newest (t-f7bc850925).
       conversations: p(`select c.*, (select count(*) from messages m where m.conversation_id = c.id and m.role = 'user') questions
-                        from conversations c order by c.updated_at desc`),
+                        from conversations c order by c.pinned_at is null, c.pinned_at, case when c.pinned_at is not null then c.id end, c.updated_at desc`),
+      pin: p('update conversations set pinned_at = ? where id = ?'),
       setSession: p('update conversations set session = ?, model = coalesce(?, model), updated_at = ? where id = ?'),
       addMessage: p('insert into messages (conversation_id, role, text, cited, unknown, created_at) values (?, ?, ?, ?, ?, ?)'),
       messages: p('select * from messages where conversation_id = ? order by id'),
@@ -327,6 +329,14 @@ export class Store {
   /* Its messages and sources go with it. */
   deleteConversation(id) { this.q.deleteConversation.run(id); }
   conversations() { return this.q.conversations.all(); }
+  /* Pinned to the sidebar, or not; pinning again keeps its place. */
+  pin(id, pinned) {
+    const c = this.q.conversation.get(id);
+    if (!c) return null;
+    if (pinned && !c.pinned_at) this.q.pin.run(now(), id);
+    if (!pinned) this.q.pin.run(null, id);
+    return this.conversation(id);
+  }
   setSession(id, session, model = null) { this.q.setSession.run(session, model, now(), id); }
 
   addMessage(conversationId, { role, text, cited = null, unknown = null }) {
