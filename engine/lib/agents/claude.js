@@ -40,6 +40,8 @@ export function input(prompt, images = []) {
 }
 
 function classify(message) {
+  // Its message names an API key too, so it is told apart before the login check (t-b508dd2b28).
+  if (/past due|billing|pay or renew/i.test(message)) return new AgentError('billing', `Claude Code cannot use the Claude subscription - a payment may be past due. Pay or renew at https://claude.ai/settings/billing, then try again. (${message})`);
   if (/log ?in|auth|credential|api key/i.test(message)) {
     return new AgentError('not-logged-in', `Claude Code is not logged in - run "claude" once in a terminal and log in. (${message})`);
   }

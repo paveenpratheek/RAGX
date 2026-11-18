@@ -26,7 +26,7 @@ export class AgentError extends Error {
   constructor(code, message) {
     super(message);
     this.name = 'AgentError';
-    this.code = code; // not-found | not-logged-in | limit | refused | timeout | cancelled | unsafe-folder | failed
+    this.code = code; // not-found | not-logged-in | billing | limit | refused | timeout | cancelled | unsafe-folder | failed
   }
 }
 

@@ -4,7 +4,7 @@
  *
  * Behaviours: answer, echo (answers with what it was given: flags, cwd,
  * which API keys it can see, the prompt), replay (the real output recorded
- * in phase 0), crash, hang, login, deny-once, deny-always, error-with-answer,
+ * in phase 0), crash, hang, login, billing, deny-once, deny-always, error-with-answer,
  * cite-unknown (cites a source number that was never given), slow (answers
  * after 0.8 s, to catch a second question arriving mid-answer), read (an
  * image's reading as JSON), read-prose (a reading that is not JSON).
@@ -72,6 +72,11 @@ function turn(msg) {
     out({ type: 'system', subtype: 'init', session_id: session, tools: [], mcp_servers: [], apiKeySource: 'none', model: flag('--model') || 'default' });
     if (behaviour === 'login') {
       out({ type: 'result', subtype: 'success', is_error: true, result: 'Invalid API key · Please run /login', session_id: session });
+      return;
+    }
+    if (behaviour === 'billing') {
+      // Claude Code's own words when the subscription cannot be used (t-b508dd2b28).
+      out({ type: 'result', subtype: 'success', is_error: true, result: "Claude Code can't use your Claude subscription, usually because a payment is past due · Pay or renew at https://claude.ai/settings/billing (if you just paid, try again shortly), or use an Anthropic API key instead", session_id: session });
       return;
     }
     for (const piece of answer.match(/.{1,12}/gs)) out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: piece } } });

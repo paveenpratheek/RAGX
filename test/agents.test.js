@@ -91,6 +91,8 @@ test('claude resumes a session by id', async (t) => {
 test('claude not logged in, crashed or hung is reported by name', async (t) => {
   const cwd = folder(t);
   await assert.rejects(run(claude, 'login', cwd), (e) => e instanceof AgentError && e.code === 'not-logged-in' && /run "claude"/.test(e.message));
+  // A past-due subscription names an API key too, but is not a login (t-b508dd2b28).
+  await assert.rejects(run(claude, 'billing', cwd), (e) => e.code === 'billing' && /claude\.ai\/settings\/billing/.test(e.message) && !/not logged in/.test(e.message));
   await assert.rejects(run(claude, 'crash', cwd), (e) => e.code === 'failed' && /boom/.test(e.message));
   const t0 = Date.now();
   await assert.rejects(run(claude, 'hang', cwd, { timeoutMs: 1500 }), (e) => e.code === 'timeout');
